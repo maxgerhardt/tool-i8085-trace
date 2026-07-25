@@ -14,9 +14,6 @@
     "debugger"
   ],
   "license": "BSD-3-Clause",
-  "system": [
-    "windows_amd64"
-  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/maxgerhardt/tool-i8085-trace"

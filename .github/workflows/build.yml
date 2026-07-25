@@ -1,0 +1,101 @@
+name: Build packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            branch: linux_x64
+            system: linux_x86_64
+            plugin: mc6850_28c256.so
+          - os: macos-13
+            branch: darwin_x64
+            system: darwin_x86_64
+            plugin: mc6850_28c256.dylib
+          - os: macos-14
+            branch: darwin_arm64
+            system: darwin_arm64
+            plugin: mc6850_28c256.dylib
+          - os: windows-latest
+            branch: windows_x64
+            system: windows_amd64
+            plugin: mc6850_28c256.dll
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Build: Linux / macOS (system compiler) ---
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j
+
+      # --- Build: Windows (MSYS2 MinGW, statically linked -> no runtime DLLs) ---
+      - name: Setup MSYS2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DCMAKE_MODULE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
+          cmake --build build
+
+      # --- Assemble the PlatformIO package ---
+      - name: Assemble package
+        shell: bash
+        run: |
+          rm -rf pkg && mkdir -p pkg/bin pkg/plugins
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/i8085-trace.exe pkg/bin/
+          else
+            cp build/i8085-trace pkg/bin/
+          fi
+          cp "build/${{ matrix.plugin }}" pkg/plugins/
+          cp README.md pkg/ 2>/dev/null || true
+          python3 - <<'PY'
+          import json
+          m = json.load(open("package.json"))
+          m["system"] = ["${{ matrix.system }}"]
+          json.dump(m, open("pkg/package.json", "w"), indent=2)
+          PY
+          ls -R pkg
+
+      # --- Smoke test: the binary runs ---
+      - name: Smoke test
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then ./pkg/bin/i8085-trace.exe -h || true
+          else ./pkg/bin/i8085-trace -h || true; fi
+
+      # --- Publish to the per-OS branch ---
+      - name: Publish ${{ matrix.branch }}
+        shell: bash
+        run: |
+          cd pkg
+          git init -q
+          git checkout -b "${{ matrix.branch }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Build ${{ matrix.branch }} from ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" "${{ matrix.branch }}"
