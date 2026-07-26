@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -15,10 +19,6 @@ jobs:
             branch: linux_x64
             system: linux_x86_64
             plugin: mc6850_28c256.so
-          - os: macos-13
-            branch: darwin_x64
-            system: darwin_x86_64
-            plugin: mc6850_28c256.dylib
           - os: macos-14
             branch: darwin_arm64
             system: darwin_arm64
