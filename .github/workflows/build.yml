@@ -80,7 +80,7 @@ jobs:
           else
             cp build/i8085-trace pkg/bin/
           fi
-          cp "build/*.${{ matrix.plugin }}" pkg/plugins/
+          cp build/*.${{ matrix.plugin }} pkg/plugins/
           cp README.md pkg/ 2>/dev/null || true
           python3 - <<'PY'
           import json
