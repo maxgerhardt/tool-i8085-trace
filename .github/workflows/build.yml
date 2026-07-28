@@ -18,15 +18,15 @@ jobs:
           - os: ubuntu-latest
             branch: linux_x64
             system: linux_x86_64
-            plugin: mc6850_28c256.so
+            plugin: *.so
           - os: macos-14
             branch: darwin_arm64
             system: darwin_arm64
-            plugin: mc6850_28c256.dylib
+            plugin: *.dylib
           - os: windows-latest
             branch: windows_x64
             system: windows_amd64
-            plugin: mc6850_28c256.dll
+            plugin: *.dll
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
