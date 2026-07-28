@@ -32,6 +32,7 @@ static void sock_nonblock(sock_t s) { u_long m = 1; ioctlsocket(s, FIONBIO, &m);
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <unistd.h>
 typedef int sock_t;
 static const sock_t BAD_SOCK = -1;
