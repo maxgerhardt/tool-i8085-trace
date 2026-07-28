@@ -8,6 +8,19 @@
 
 // Core derived from sim8085 (BSD 3-Clause). See LICENSE.
 
+// Route every CPU memory write through the plugin runtime so memory-modelling
+// plugins (ROM / write-protected EEPROM) can observe or veto it. The runtime
+// returns the value to actually store: `val` to allow, or the existing byte to
+// veto (write-protection). When no memory plugin is loaded it returns `val`
+// unchanged, so this stays a single call on the hot path. Reads are left as
+// direct state->memory[] accesses.
+extern UINT8 io_runtime_mem_write(State8085 *state, int addr, int val);
+
+static inline void mem_wr(State8085 *s, int addr, UINT8 val) {
+    int a = addr & 0xFFFF;
+    s->memory[a] = io_runtime_mem_write(s, a, val);
+}
+
 int parity(int x, int size) {
     int i;
     int p = 0;
@@ -97,8 +110,8 @@ uint8_t subtractByteWithBorrow(State8085 *state, uint8_t lhs, uint8_t rhs, shoul
 
 void call(State8085 *state, uint16_t addr) {
     uint16_t pc = state->pc + 2;
-    state->memory[state->sp - 1] = (pc >> 8) & 0xff;
-    state->memory[state->sp - 2] = (pc & 0xff);
+    mem_wr(state, state->sp - 1, (pc >> 8) & 0xff);
+    mem_wr(state, state->sp - 2, (pc & 0xff));
     state->sp = state->sp - 2;
     state->pc = addr;
 }
@@ -110,8 +123,8 @@ void returnToCaller(State8085 *state) {
 
 void rst(State8085 *state, uint8_t rst_number, uint8_t half) {
     uint16_t pc = state->pc; // PC has already been incremented by Emulate8085Op
-    state->memory[state->sp - 1] = (pc >> 8) & 0xff;
-    state->memory[state->sp - 2] = (pc & 0xff);
+    mem_wr(state, state->sp - 1, (pc >> 8) & 0xff);
+    mem_wr(state, state->sp - 2, (pc & 0xff));
     state->sp = state->sp - 2;
     state->pc = rst_number * 8 + half * 4;
 }
@@ -192,7 +205,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->pc += 2;
         break;
     case 0x02: // STAX B
-        state->memory[(state->b << 8) | state->c] = state->a;
+        mem_wr(state, (state->b << 8) | state->c, state->a);
         states = 7;
         break;
     case 0x03: // INX B
@@ -302,7 +315,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->pc += 2;
         break;
     case 0x12: // STAX D
-        state->memory[(state->d << 8) + state->e] = state->a;
+        mem_wr(state, (state->d << 8) + state->e, state->a);
         states = 7;
         break;
     case 0x13: // INX    D
@@ -411,8 +424,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     case 0x22: // SHLD word
     {
         uint16_t offset = (opcode[2] << 8) | opcode[1];
-        state->memory[offset] = state->l;
-        state->memory[offset + 1] = state->h;
+        mem_wr(state, offset, state->l);
+        mem_wr(state, offset + 1, state->h);
         state->pc += 2;
         states = 16;
     } break;
@@ -549,7 +562,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     case 0x32: // STA word
     {
         uint16_t offset = (opcode[2] << 8) | (opcode[1]);
-        state->memory[offset] = state->a;
+        mem_wr(state, offset, state->a);
         state->pc += 2;
         states = 13;
     } break;
@@ -561,20 +574,20 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     case 0x34: // INR M
     {
         uint16_t offset = (state->h << 8) | state->l;
-        state->memory[offset] = addByte(state, state->memory[offset], 1, PRESERVE_CARRY);
+        mem_wr(state, offset, addByte(state, state->memory[offset], 1, PRESERVE_CARRY));
         states = 10;
     } break;
     case 0x35: // DCR M
     {
         uint16_t offset = (state->h << 8) | state->l;
-        state->memory[offset] = subtractByte(state, state->memory[offset], 1, PRESERVE_CARRY);
+        mem_wr(state, offset, subtractByte(state, state->memory[offset], 1, PRESERVE_CARRY));
         states = 10;
     } break;
     case 0x36: // MVI M, byte
     {
         // AC set if lower nibble of h was zero prior to dec
         uint16_t offset = (state->h << 8) | state->l;
-        state->memory[offset] = opcode[1];
+        mem_wr(state, offset, opcode[1]);
         state->pc++;
         states = 10;
     } break;
@@ -840,37 +853,37 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     case 0x70: // MOV M, B
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->b;
+        mem_wr(state, offset, state->b);
         states = 7;
     } break;
     case 0x71: // MOV M, C
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->c;
+        mem_wr(state, offset, state->c);
         states = 7;
     } break;
     case 0x72: // MOV M, D
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->d;
+        mem_wr(state, offset, state->d);
         states = 7;
     } break;
     case 0x73: // MOV M, E
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->e;
+        mem_wr(state, offset, state->e);
         states = 7;
     } break;
     case 0x74: // MOV M, H
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->h;
+        mem_wr(state, offset, state->h);
         states = 7;
     } break;
     case 0x75: // MOV M, L
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->l;
+        mem_wr(state, offset, state->l);
         states = 7;
     } break;
     case 0x76: // HLT
@@ -880,7 +893,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     case 0x77: // MOV M, A
     {
         uint16_t offset = (state->h << 8) | (state->l);
-        state->memory[offset] = state->a;
+        mem_wr(state, offset, state->a);
         states = 7;
     } break;
     case 0x78:
@@ -1237,8 +1250,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         break;
     case 0xc5: // PUSH   B
     {
-        state->memory[state->sp - 1] = state->b;
-        state->memory[state->sp - 2] = state->c;
+        mem_wr(state, state->sp - 1, state->b);
+        mem_wr(state, state->sp - 2, state->c);
         state->sp = state->sp - 2;
         states = 13;
     } break;
@@ -1349,8 +1362,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         break;
     case 0xd5: // PUSH   D
     {
-        state->memory[state->sp - 1] = state->d;
-        state->memory[state->sp - 2] = state->e;
+        mem_wr(state, state->sp - 1, state->d);
+        mem_wr(state, state->sp - 2, state->e);
         state->sp = state->sp - 2;
         states = 13;
     } break;
@@ -1373,8 +1386,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     case 0xd9: // SHLX (undocumented): [DE] = L, [DE+1] = H
     {
         uint16_t de = (state->d << 8) | state->e;
-        state->memory[de] = state->l;
-        state->memory[de + 1] = state->h;
+        mem_wr(state, de, state->l);
+        mem_wr(state, de + 1, state->h);
         states = 10;
     } break;
     case 0xda: // JC Addr
@@ -1447,8 +1460,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
     {
         uint16_t spL = state->memory[state->sp];
         uint16_t spH = state->memory[state->sp + 1];
-        state->memory[state->sp] = state->l;
-        state->memory[state->sp + 1] = state->h;
+        mem_wr(state, state->sp, state->l);
+        mem_wr(state, state->sp + 1, state->h);
         state->h = spH;
         state->l = spL;
         states = 16;
@@ -1464,8 +1477,8 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         break;
     case 0xe5: // PUSH H
     {
-        state->memory[state->sp - 1] = state->h;
-        state->memory[state->sp - 2] = state->l;
+        mem_wr(state, state->sp - 1, state->h);
+        mem_wr(state, state->sp - 2, state->l);
         state->sp = state->sp - 2;
         states = 13;
     } break;
@@ -1597,7 +1610,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
         state->sp--;
 
         // Step 2: Store the accumulator at the new stack pointer location
-        state->memory[state->sp] = state->a;
+        mem_wr(state, state->sp, state->a);
 
         // Step 3: Decrement the stack pointer again
         state->sp--;
@@ -1613,7 +1626,7 @@ int Emulate8085Op(State8085 *state, ExecutionStats8085 *stats) {
                       (state->cc.cy);        // Carry flag (bit 0)
 
         // Step 5: Store the PSW byte at the new stack pointer location
-        state->memory[state->sp] = psw;
+        mem_wr(state, state->sp, psw);
 
         states = 13;
     } break;

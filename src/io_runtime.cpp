@@ -1,56 +1,53 @@
 //----------------------------------------------------------------------------
 // I8085 Trace - Runtime I/O plugin loader
 //
-// io_runtime.cpp - Optional dynamic I/O plugin integration
+// io_runtime.cpp - Optional dynamic I/O plugin integration.
+//
+// Supports loading MULTIPLE plugin instances (e.g. several MC6850 UARTs at
+// different base ports plus a memory-model plugin). Each --io-plugin /
+// --io-plugin-config pair appends a plugin; every callback fans out to all
+// loaded plugins in load order. A plugin must only touch the ports / memory
+// regions it owns.
 //----------------------------------------------------------------------------
 
 #include "i8085_io_runtime.h"
 #include "i8085_io_plugin.h"
+#include "io_channel.h"
 #include "disk_emu.h"
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
-//----------------------------------------------------------------------------
-// Cross-platform dynamic library loading
-//
-// POSIX uses dlopen/dlsym/dlclose/dlerror from <dlfcn.h>; Windows uses
-// LoadLibrary/GetProcAddress/FreeLibrary from <windows.h>. The wrappers below
-// keep the loader logic identical on both platforms.
-//----------------------------------------------------------------------------
-
-#ifdef _WIN32
+// Portable dynamic-loader shim: POSIX dlopen on unix, a thin LoadLibrary
+// wrapper on Windows (MinGW ships no dlfcn.h).
+#if defined(_WIN32)
 #include <windows.h>
-
-static void *dl_open(const char *path) { return (void *)LoadLibraryA(path); }
-static void *dl_sym(void *module, const char *symbol) {
-    return (void *)GetProcAddress((HMODULE)module, symbol);
-}
-static void dl_close(void *module) { FreeLibrary((HMODULE)module); }
-static const char *dl_error(void) {
-    static char buf[256];
-    DWORD err = GetLastError();
-    DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err, 0, buf,
-                             sizeof(buf), nullptr);
-    if (n == 0)
-        snprintf(buf, sizeof(buf), "error %lu", (unsigned long)err);
+#define RTLD_NOW 0
+#define RTLD_LOCAL 0
+static void *dlopen(const char *path, int) { return (void *)LoadLibraryA(path); }
+static void *dlsym(void *h, const char *sym) { return (void *)GetProcAddress((HMODULE)h, sym); }
+static int dlclose(void *h) { return FreeLibrary((HMODULE)h) ? 0 : -1; }
+static const char *dlerror(void) {
+    static char buf[160];
+    snprintf(buf, sizeof buf, "LoadLibrary/GetProcAddress failed (error %lu)", (unsigned long)GetLastError());
     return buf;
 }
 #else
 #include <dlfcn.h>
-
-static void *dl_open(const char *path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
-static void *dl_sym(void *module, const char *symbol) { return dlsym(module, symbol); }
-static void dl_close(void *module) { dlclose(module); }
-static const char *dl_error(void) { return dlerror(); }
 #endif
+
+struct PluginSlot {
+    void *module = nullptr;
+    void *ctx = nullptr;
+    I8085IoPluginAPI api = {};
+};
 
 struct IORuntimeState {
     bool ioTrace = false;
     State8085 *state = nullptr;
-    void *module = nullptr;
-    void *pluginCtx = nullptr;
-    I8085IoPluginAPI api = {};
+    std::vector<PluginSlot> plugins;
+    bool anyMemWrite = false; // true if any loaded plugin implements on_mem_write
 };
 
 static IORuntimeState gRuntime;
@@ -73,75 +70,100 @@ void io_runtime_set_state(State8085 *state) {
 }
 
 void io_runtime_on_reset(void) {
-    if (gRuntime.state && gRuntime.module && gRuntime.api.on_reset) {
-        gRuntime.api.on_reset(gRuntime.pluginCtx, gRuntime.state);
+    if (!gRuntime.state)
+        return;
+    for (auto &p : gRuntime.plugins) {
+        if (p.api.on_reset)
+            p.api.on_reset(p.ctx, gRuntime.state);
     }
 }
 
 void io_runtime_on_step(UINT64 step, UINT64 tstates) {
-    if (gRuntime.state && gRuntime.module && gRuntime.api.on_step) {
-        gRuntime.api.on_step(gRuntime.pluginCtx, gRuntime.state, step, tstates);
+    // Service host channels first (accept clients, drain input, idle-flush) so a
+    // plugin's on_step sees freshly received bytes.
+    io_channels_tick(step);
+    if (!gRuntime.state)
+        return;
+    for (auto &p : gRuntime.plugins) {
+        if (p.api.on_step)
+            p.api.on_step(p.ctx, gRuntime.state, step, tstates);
     }
 }
 
+// Load a plugin and APPEND it to the runtime. Repeatable: each call adds one
+// instance. Returns 0 on success.
 int io_runtime_load_plugin(const char *path, const char *config, char *errbuf, size_t errbuf_len) {
     if (!path || *path == '\0') {
         SetErr(errbuf, errbuf_len, "empty plugin path");
         return -1;
     }
 
-    io_runtime_unload_plugin();
-
-    void *module = dl_open(path);
+    void *module = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!module) {
-        SetErr(errbuf, errbuf_len, dl_error());
-        return -1;
-    }
-
-    auto initFn = (I8085IoPluginInitFn)dl_sym(module, I8085_IO_PLUGIN_INIT_SYMBOL);
-    if (!initFn) {
-        SetErr(errbuf, errbuf_len, "plugin init symbol not found");
-        dl_close(module);
+        SetErr(errbuf, errbuf_len, dlerror());
         return -1;
     }
 
     void *pluginCtx = nullptr;
-    I8085IoPluginAPI api = {};
+    I8085IoPluginAPI api = {}; // zero-init: newer callbacks left NULL stay unused
     char pluginErr[256] = {0};
-    int rc = initFn(config, &pluginCtx, &api, pluginErr, sizeof(pluginErr));
+    int rc;
+
+    // Prefer init2 (which also receives the host byte-channel services); fall
+    // back to the plain init so older plugins keep loading unchanged.
+    auto init2Fn = (I8085IoPluginInit2Fn)dlsym(module, I8085_IO_PLUGIN_INIT2_SYMBOL);
+    if (init2Fn) {
+        rc = init2Fn(config, io_channels_host_api(), &pluginCtx, &api, pluginErr, sizeof(pluginErr));
+    } else {
+        auto initFn = (I8085IoPluginInitFn)dlsym(module, I8085_IO_PLUGIN_INIT_SYMBOL);
+        if (!initFn) {
+            SetErr(errbuf, errbuf_len, "plugin init symbol not found");
+            dlclose(module);
+            return -1;
+        }
+        rc = initFn(config, &pluginCtx, &api, pluginErr, sizeof(pluginErr));
+    }
     if (rc != 0) {
         if (pluginErr[0] != '\0')
             SetErr(errbuf, errbuf_len, pluginErr);
         else
             SetErr(errbuf, errbuf_len, "plugin init failed");
-        dl_close(module);
+        dlclose(module);
         return -1;
     }
 
-    if (api.abi_version != I8085_IO_PLUGIN_ABI_VERSION) {
+    // The API struct is append-only, so any version in [1, current] is usable:
+    // callbacks are individually null-checked before use.
+    if (api.abi_version < 1u || api.abi_version > I8085_IO_PLUGIN_ABI_VERSION) {
         SetErr(errbuf, errbuf_len, "plugin ABI version mismatch");
         if (api.destroy)
             api.destroy(pluginCtx);
-        dl_close(module);
+        dlclose(module);
         return -1;
     }
 
-    gRuntime.module = module;
-    gRuntime.pluginCtx = pluginCtx;
-    gRuntime.api = api;
+    PluginSlot slot;
+    slot.module = module;
+    slot.ctx = pluginCtx;
+    slot.api = api;
+    gRuntime.plugins.push_back(slot);
+    if (api.on_mem_write)
+        gRuntime.anyMemWrite = true;
     return 0;
 }
 
+// Unload ALL loaded plugins (reverse load order).
 void io_runtime_unload_plugin(void) {
-    if (gRuntime.module) {
-        if (gRuntime.api.destroy) {
-            gRuntime.api.destroy(gRuntime.pluginCtx);
-        }
-        dl_close(gRuntime.module);
+    for (auto it = gRuntime.plugins.rbegin(); it != gRuntime.plugins.rend(); ++it) {
+        if (it->api.destroy)
+            it->api.destroy(it->ctx);
+        if (it->module)
+            dlclose(it->module);
     }
-    gRuntime.module = nullptr;
-    gRuntime.pluginCtx = nullptr;
-    gRuntime.api = {};
+    gRuntime.plugins.clear();
+    gRuntime.anyMemWrite = false;
+    // Safety net: close any channels a plugin did not close itself.
+    io_channels_shutdown();
 }
 
 extern "C" void io_write(int address, int value) {
@@ -156,8 +178,11 @@ extern "C" void io_write(int address, int value) {
         disk_emu_on_io_write(gRuntime.state, port, val);
     }
 
-    if (gRuntime.state && gRuntime.module && gRuntime.api.on_io_write) {
-        gRuntime.api.on_io_write(gRuntime.pluginCtx, gRuntime.state, port, val);
+    if (gRuntime.state) {
+        for (auto &p : gRuntime.plugins) {
+            if (p.api.on_io_write)
+                p.api.on_io_write(p.ctx, gRuntime.state, port, val);
+        }
     }
 }
 
@@ -168,8 +193,11 @@ extern "C" void io_pre_read(int address) {
         disk_emu_on_io_pre_read(gRuntime.state, port);
     }
 
-    if (gRuntime.state && gRuntime.module && gRuntime.api.on_io_pre_read) {
-        gRuntime.api.on_io_pre_read(gRuntime.pluginCtx, gRuntime.state, port);
+    if (gRuntime.state) {
+        for (auto &p : gRuntime.plugins) {
+            if (p.api.on_io_pre_read)
+                p.api.on_io_pre_read(p.ctx, gRuntime.state, port);
+        }
     }
 }
 
@@ -181,7 +209,26 @@ extern "C" void io_read(int address, int value) {
         fprintf(stderr, "[IO] IN  0x%02X -> 0x%02X\n", port, val);
     }
 
-    if (gRuntime.state && gRuntime.module && gRuntime.api.on_io_post_read) {
-        gRuntime.api.on_io_post_read(gRuntime.pluginCtx, gRuntime.state, port, val);
+    if (gRuntime.state) {
+        for (auto &p : gRuntime.plugins) {
+            if (p.api.on_io_post_read)
+                p.api.on_io_post_read(p.ctx, gRuntime.state, port, val);
+        }
     }
+}
+
+// Called by the CPU core for every memory write (see mem_wr in i8085_exec.c).
+// Chains the value through each memory-modelling plugin so a ROM / write-
+// protected EEPROM region can veto the write by returning the existing byte.
+// Returns `val` unchanged when no plugin models memory (the hot path).
+extern "C" UINT8 io_runtime_mem_write(State8085 *state, int addr, int val) {
+    UINT8 v = (UINT8)(val & 0xFF);
+    if (!gRuntime.anyMemWrite || !state)
+        return v;
+    UINT16 a = (UINT16)(addr & 0xFFFF);
+    for (auto &p : gRuntime.plugins) {
+        if (p.api.on_mem_write)
+            v = p.api.on_mem_write(p.ctx, state, a, v);
+    }
+    return v;
 }

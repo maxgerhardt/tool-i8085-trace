@@ -7,6 +7,7 @@
 #include "i8085_cpu.h"
 #include "gdb_stub.hpp"
 #include "i8085_io_runtime.h"
+#include "io_channel.h"
 #include "disk_emu.h"
 #include <algorithm>
 #include <cctype>
@@ -51,6 +52,13 @@ struct IOInit {
     UINT8 value;
 };
 
+// One --io-plugin plus its (optional) --io-plugin-config. Repeatable so a board
+// can instantiate several plugins (e.g. multiple MC6850 UARTs + a memory model).
+struct IOPluginSpec {
+    const char *path = nullptr;
+    const char *config = nullptr;
+};
+
 struct Config {
     const char *inputFile = nullptr;
     const char *outputFile = nullptr;
@@ -68,8 +76,7 @@ struct Config {
     UINT64 tracepointMax = 0;
     bool tracepointStop = false;
     std::vector<IOInit> ioInit;
-    const char *ioPluginPath = nullptr;
-    const char *ioPluginConfig = nullptr;
+    std::vector<IOPluginSpec> ioPlugins;
     bool ioTrace = false;
     int sidInit = -1;
     int gdbPort = 0;
@@ -564,6 +571,9 @@ static bool HasFutureIRQ(const Config &cfg, size_t nextIRQ) {
 int main(int argc, char *argv[]) {
     Config cfg;
 
+    // Let "window" channels locate the bundled i8085-console next to this exe.
+    io_channels_set_exe_path(argv[0]);
+
     static struct option longOpts[] = {{"load", required_argument, nullptr, 'l'},
                                        {"entry", required_argument, nullptr, 'e'},
                                        {"sp", required_argument, nullptr, 'p'},
@@ -672,10 +682,13 @@ int main(int argc, char *argv[]) {
             break;
         }
         case 1001:
-            cfg.ioPluginPath = optarg;
+            cfg.ioPlugins.push_back(IOPluginSpec{optarg, nullptr});
             break;
         case 1002:
-            cfg.ioPluginConfig = optarg;
+            if (!cfg.ioPlugins.empty())
+                cfg.ioPlugins.back().config = optarg;
+            else
+                fprintf(stderr, "Warning: --io-plugin-config before any --io-plugin, ignored\n");
             break;
         case 'O':
             cfg.ioTrace = true;
@@ -795,10 +808,10 @@ int main(int argc, char *argv[]) {
     Reset8085(state, cfg.entryAddr, cfg.spAddr);
     io_runtime_set_trace(cfg.ioTrace ? 1 : 0);
     io_runtime_set_state(state);
-    if (cfg.ioPluginPath) {
+    for (const auto &spec : cfg.ioPlugins) {
         char err[512] = {0};
-        if (io_runtime_load_plugin(cfg.ioPluginPath, cfg.ioPluginConfig, err, sizeof(err)) != 0) {
-            fprintf(stderr, "Error: Failed to load I/O plugin '%s': %s\n", cfg.ioPluginPath,
+        if (io_runtime_load_plugin(spec.path, spec.config ? spec.config : "", err, sizeof(err)) != 0) {
+            fprintf(stderr, "Error: Failed to load I/O plugin '%s': %s\n", spec.path,
                     (err[0] != '\0') ? err : "unknown error");
             io_runtime_unload_plugin();
             Free8085(state);
@@ -843,8 +856,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "  Entry:  0x%04X\n", cfg.entryAddr);
         fprintf(stderr, "  SP:     0x%04X\n", cfg.spAddr);
         fprintf(stderr, "  Max:    %" PRIu64 " steps\n", cfg.maxSteps);
-        if (cfg.ioPluginPath) {
-            fprintf(stderr, "  I/O plugin: %s\n", cfg.ioPluginPath);
+        for (const auto &spec : cfg.ioPlugins) {
+            fprintf(stderr, "  I/O plugin: %s\n", spec.path);
         }
         if (cfg.diskDir) {
             fprintf(stderr, "  Disk:     %s\n", cfg.diskDir);
