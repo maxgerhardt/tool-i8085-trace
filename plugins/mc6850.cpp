@@ -229,9 +229,8 @@ static void on_io_write(void *vctx, State8085 *state, UINT8 port, UINT8 value) {
     }
 }
 
-// Shared init used by both the plain init (no host) and init2 (with host).
-static int initCommon(const char *config, const I8085HostAPI *host, void **out_ctx, I8085IoPluginAPI *out_api,
-                      char *errbuf, size_t errbuf_len) {
+PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *host, void **out_ctx,
+                                       I8085IoPluginAPI *out_api, char *errbuf, size_t errbuf_len) {
     Ctx *c = new Ctx();
     c->host = host;
 
@@ -296,16 +295,4 @@ static int initCommon(const char *config, const I8085HostAPI *host, void **out_c
     *out_ctx = c;
     (void)errbuf_len;
     return 0;
-}
-
-// Plain init: no host services (interactive channels are simply unavailable).
-PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, void **out_ctx, I8085IoPluginAPI *out_api, char *errbuf,
-                                       size_t errbuf_len) {
-    return initCommon(config, nullptr, out_ctx, out_api, errbuf, errbuf_len);
-}
-
-// Preferred entry point: also receives the host byte-channel services.
-PLUGIN_EXPORT int i8085_io_plugin_init2(const char *config, const I8085HostAPI *host, void **out_ctx,
-                                        I8085IoPluginAPI *out_api, char *errbuf, size_t errbuf_len) {
-    return initCommon(config, host, out_ctx, out_api, errbuf, errbuf_len);
 }

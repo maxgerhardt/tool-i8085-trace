@@ -10,13 +10,13 @@ debug server.
 
 ```
 bin/
-  i8085-trace.exe          the simulator
-  libgcc_s_seh-1.dll        \
-  libstdc++-6.dll            > bundled MinGW runtime (so it runs without MinGW)
-  libwinpthread-1.dll       /
+  i8085-trace.exe          the simulator (statically linked -- no runtime DLLs)
+  i8085-console.exe        raw-mode stdin<->TCP bridge, auto-spawned per windowed UART
 plugins/
-  mc6850_28c256.dll        MC6850 ACIA I/O plugin (ports 0xDE/0xDF), matches the
-                           OMEN ALPHA console UART; captures transmitted bytes
+  mc6850.dll               MC6850 ACIA (UART), relocatable via base=; matches the
+                           OMEN ALPHA console UART at 0xDE/0xDF. Pure I/O.
+  memory.dll               memory-region plugin: ROM / write-protected EEPROM,
+                           enforced through the on_mem_write hook
 ```
 
 ## Simulator usage
@@ -27,17 +27,19 @@ bin/i8085-trace.exe -l 0x2000 -e 0x2000 program.bin
 
 # with the console ACIA plugin, capturing UART TX to a file
 bin/i8085-trace.exe -q -S -n 4000000 -l 0x2000 -e 0x2000 \
-    --io-plugin=plugins/mc6850_28c256.dll \
-    --io-plugin-config="txlog=uart.txt" program.bin
+    --io-plugin=plugins/mc6850.dll \
+    --io-plugin-config="base=0xDE;txlog=uart.txt" program.bin
 
 # GDB remote debugging (RSP) server on a port
 bin/i8085-trace.exe --gdb=1234 -l 0x2000 -e 0x2000 program.bin
 ```
 
-The MC6850 plugin models the OMEN ALPHA console ACIA at ports 0xDE (status /
-control) and 0xDF (data), keeping TDRE asserted so firmware TX proceeds, and
-appends every transmitted byte to the `txlog` file — this is how a firmware's
-UART output is surfaced when running under the simulator.
+The MC6850 plugin models an ACIA at ports `base` (status / control) and
+`base+1` (data) — `base=0xDE` matches the OMEN ALPHA console UART — keeping TDRE
+asserted so firmware TX proceeds, and appends every transmitted byte to the
+`txlog` file. Multiple `--io-plugin=…/mc6850.dll` instances at different `base`
+ports model several UARTs. This is how a firmware's UART output is surfaced when
+running under the simulator.
 
 See the simulator's own `--help` for the full option set (interrupts, memory
 dumps, coverage, tracepoints, ...).

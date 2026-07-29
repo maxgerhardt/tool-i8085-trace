@@ -107,22 +107,14 @@ int io_runtime_load_plugin(const char *path, const char *config, char *errbuf, s
     void *pluginCtx = nullptr;
     I8085IoPluginAPI api = {}; // zero-init: newer callbacks left NULL stay unused
     char pluginErr[256] = {0};
-    int rc;
 
-    // Prefer init2 (which also receives the host byte-channel services); fall
-    // back to the plain init so older plugins keep loading unchanged.
-    auto init2Fn = (I8085IoPluginInit2Fn)dlsym(module, I8085_IO_PLUGIN_INIT2_SYMBOL);
-    if (init2Fn) {
-        rc = init2Fn(config, io_channels_host_api(), &pluginCtx, &api, pluginErr, sizeof(pluginErr));
-    } else {
-        auto initFn = (I8085IoPluginInitFn)dlsym(module, I8085_IO_PLUGIN_INIT_SYMBOL);
-        if (!initFn) {
-            SetErr(errbuf, errbuf_len, "plugin init symbol not found");
-            dlclose(module);
-            return -1;
-        }
-        rc = initFn(config, &pluginCtx, &api, pluginErr, sizeof(pluginErr));
+    auto initFn = (I8085IoPluginInitFn)dlsym(module, I8085_IO_PLUGIN_INIT_SYMBOL);
+    if (!initFn) {
+        SetErr(errbuf, errbuf_len, "plugin init symbol not found");
+        dlclose(module);
+        return -1;
     }
+    int rc = initFn(config, io_channels_host_api(), &pluginCtx, &api, pluginErr, sizeof(pluginErr));
     if (rc != 0) {
         if (pluginErr[0] != '\0')
             SetErr(errbuf, errbuf_len, pluginErr);
@@ -132,9 +124,7 @@ int io_runtime_load_plugin(const char *path, const char *config, char *errbuf, s
         return -1;
     }
 
-    // The API struct is append-only, so any version in [1, current] is usable:
-    // callbacks are individually null-checked before use.
-    if (api.abi_version < 1u || api.abi_version > I8085_IO_PLUGIN_ABI_VERSION) {
+    if (api.abi_version != I8085_IO_PLUGIN_ABI_VERSION) {
         SetErr(errbuf, errbuf_len, "plugin ABI version mismatch");
         if (api.destroy)
             api.destroy(pluginCtx);

@@ -76,8 +76,9 @@ static void destroy(void *vctx) {
     delete (Ctx *)vctx;
 }
 
-PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, void **out_ctx, I8085IoPluginAPI *out_api, char *errbuf,
-                                       size_t errbuf_len) {
+PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *host, void **out_ctx,
+                                       I8085IoPluginAPI *out_api, char *errbuf, size_t errbuf_len) {
+    (void)host; // memory model needs no host services
     Ctx *c = new Ctx();
     UINT32 base = parseNum(cfgValue(config, "base"), 0);
     UINT32 size = parseNum(cfgValue(config, "size"), 0x8000);

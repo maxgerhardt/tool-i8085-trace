@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-// Host-services table to hand to a plugin's init2.
+// Host-services table to hand to a plugin's init.
 const I8085HostAPI *io_channels_host_api(void);
 
 // Record the simulator executable path (argv[0]) so "window" channels can

@@ -1,7 +1,7 @@
 //----------------------------------------------------------------------------
 // io_channel.cpp - core byte-channel services (TCP / window / stdout / gdbtx).
 //
-// Implements the I8085HostAPI handed to plugins at init2. All platform-specific
+// Implements the I8085HostAPI handed to plugins at init. All platform-specific
 // networking and terminal spawning lives here, behind channel_open/read/write/
 // close, so plugins stay portable.
 //----------------------------------------------------------------------------

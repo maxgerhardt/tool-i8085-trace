@@ -28,19 +28,7 @@ if(WIN32)
     target_link_libraries(i8085-trace PRIVATE ws2_32)
 endif()
 
-# MC6850 ACIA / 28C256 EEPROM I/O plugin (loaded at runtime via --io-plugin).
-add_library(mc6850_28c256 MODULE plugins/mc6850_28c256.cpp)
-target_include_directories(mc6850_28c256 PRIVATE include)
-# Keep a bare name (mc6850_28c256.dll/.so/.dylib), no "lib" prefix.
-set_target_properties(mc6850_28c256 PROPERTIES PREFIX "")
-if(APPLE)
-    set_target_properties(mc6850_28c256 PROPERTIES SUFFIX ".dylib")
-endif()
-if(WIN32)
-    target_link_libraries(mc6850_28c256 PRIVATE ws2_32)
-endif()
-
-# --- Concern-separated plugins (Spec 1) -------------------------------------
+# --- Runtime I/O plugins (loaded via --io-plugin) ---------------------------
 # Helper to declare a runtime plugin module with a bare (no "lib") name.
 function(add_i8085_plugin name)
     add_library(${name} MODULE plugins/${name}.cpp)
