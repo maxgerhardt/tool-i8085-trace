@@ -76,6 +76,34 @@ static void destroy(void *vctx) {
     delete (Ctx *)vctx;
 }
 
+static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int max) {
+    Ctx *c = (Ctx *)vctx;
+    if (info) {
+        info->kind = "memory";
+        info->base = (UINT16)c->base;
+        info->span = (UINT16)(c->end - c->base);
+    }
+    bool protectedNow = c->eeprom ? !c->wren : true;
+    int n = 0;
+    if (n < max) {
+        f[n] = {"mode", I8085_FIELD_STR, 0, c->eeprom ? "eeprom" : "rom"};
+        n++;
+    }
+    if (n < max) {
+        f[n] = {"size", I8085_FIELD_HEX, c->end - c->base, nullptr};
+        n++;
+    }
+    if (n < max) {
+        f[n] = {"wren", I8085_FIELD_BOOL, c->wren ? 1u : 0u, nullptr};
+        n++;
+    }
+    if (n < max) {
+        f[n] = {"prot", I8085_FIELD_BOOL, protectedNow ? 1u : 0u, nullptr};
+        n++;
+    }
+    return n;
+}
+
 PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *host, void **out_ctx,
                                        I8085IoPluginAPI *out_api, char *errbuf, size_t errbuf_len) {
     (void)host; // memory model needs no host services
@@ -90,6 +118,7 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     out_api->abi_version = I8085_IO_PLUGIN_ABI_VERSION;
     out_api->destroy = destroy;
     out_api->on_mem_write = on_mem_write;
+    out_api->snapshot = snapshot;
 
     *out_ctx = c;
     (void)errbuf;

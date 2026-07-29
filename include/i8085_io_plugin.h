@@ -7,10 +7,38 @@
 extern "C" {
 #endif
 
-#define I8085_IO_PLUGIN_ABI_VERSION 2u
+#define I8085_IO_PLUGIN_ABI_VERSION 3u
 // The single entry point every plugin must export (see I8085IoPluginInitFn).
 #define I8085_IO_PLUGIN_INIT_SYMBOL "i8085_io_plugin_init"
-#define I8085_HOST_API_VERSION 1u
+#define I8085_HOST_API_VERSION 2u
+
+// --- Introspection / self-description ---------------------------------------
+// A plugin may optionally describe its live state (see snapshot, below) as a
+// flat list of named fields. This lets a generic "board view" consumer render
+// any peripheral -- including internal state that never appears on the bus,
+// e.g. a free-running timer's counter -- without hardcoding chip knowledge.
+enum {
+    I8085_FIELD_U8 = 0,   // small unsigned, print decimal
+    I8085_FIELD_U16 = 1,  // unsigned, print decimal
+    I8085_FIELD_U32 = 2,  // unsigned, print decimal
+    I8085_FIELD_HEX = 3,  // unsigned, print 0x-hex
+    I8085_FIELD_BOOL = 4, // 0/1
+    I8085_FIELD_STR = 5   // use `s` instead of `u`
+};
+
+typedef struct I8085StateField {
+    const char *name; // static or ctx-lived string (must outlive the call)
+    UINT8 kind;       // one of I8085_FIELD_*
+    UINT32 u;         // numeric value (kinds U8/U16/U32/HEX/BOOL)
+    const char *s;    // string value (kind STR); else NULL
+} I8085StateField;
+
+// What a plugin instance is and where it lives on the bus.
+typedef struct I8085PluginInfo {
+    const char *kind; // e.g. "mc6850", "pit8254", "memory"; NULL = opaque
+    UINT16 base;      // first I/O port owned (0 if not port-mapped)
+    UINT16 span;      // number of consecutive ports owned
+} I8085PluginInfo;
 
 // Host services handed to a plugin at init. The core owns all the platform
 // plumbing (sockets, terminal spawning, stdout framing) behind a simple byte-
@@ -32,6 +60,16 @@ typedef struct I8085HostAPI {
     // Queue bytes to transmit; returns the number accepted.
     int (*channel_write)(void *chan, const void *buf, int len);
     void (*channel_close)(void *chan);
+
+    // --- Peer introspection (host API v2) ---
+    // Enumerate the other loaded plugins so a viewer can render the whole board.
+    // peer_count() is the number of loaded plugin instances (including self).
+    int (*peer_count)(void);
+    // Snapshot peer `idx` in [0,peer_count): fills out_info and up to max_fields
+    // of out_fields from that peer's snapshot callback. Returns the number of
+    // fields written (>=0), or -1 if idx is out of range. A peer that does not
+    // implement snapshot yields info.kind=NULL and 0 fields.
+    int (*peer_snapshot)(int idx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields);
 } I8085HostAPI;
 
 // The API struct is append-only: new callbacks are only ever added at the END,
@@ -54,6 +92,12 @@ typedef struct I8085IoPluginAPI {
     // When several plugins are loaded the value is chained through each in load
     // order. Plugins that do not model memory leave this NULL.
     UINT8 (*on_mem_write)(void *ctx, State8085 *state, UINT16 addr, UINT8 val);
+
+    // Optional (host/plugin API v3). Describe this instance's identity and live
+    // state for a board-view consumer. Fill out_info and up to max_fields of
+    // out_fields; return the number of fields written. Called on demand (never
+    // on the hot path). Field name/string pointers must outlive the call.
+    int (*snapshot)(void *ctx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields);
 } I8085IoPluginAPI;
 
 // Every plugin exports i8085_io_plugin_init with this signature. `host` is the

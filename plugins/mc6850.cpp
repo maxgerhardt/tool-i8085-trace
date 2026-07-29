@@ -57,6 +57,9 @@ struct Ctx {
     bool rxIntEnabled = false;
     bool rtsAsserted = true; // ready to receive by default
 
+    int lastTx = -1; // last byte transmitted by the CPU (-1 = none yet)
+    int lastRx = -1; // last byte the CPU read out of the RDR (-1 = none yet)
+
     // Interactive / mirror backends, provided by the core (tcp, window, stdout,
     // gdbtx). The plugin reads received bytes from and writes TX bytes to these.
     const I8085HostAPI *host = nullptr;
@@ -189,6 +192,7 @@ static void on_io_post_read(void *vctx, State8085 *state, UINT8 port, UINT8 valu
     (void)state;
     (void)value;
     if (port == c->dataPort && c->rdrFull) {
+        c->lastRx = c->rdrByte;                    // the byte the CPU just read
         c->rdrFull = false;
         c->rxPos++;                                // consumed: advance the queue
         c->nextArrival = c->lastStep + c->bytegap; // pace the next received byte
@@ -199,6 +203,7 @@ static void on_io_write(void *vctx, State8085 *state, UINT8 port, UINT8 value) {
     Ctx *c = (Ctx *)vctx;
     (void)state;
     if (port == c->dataPort) {
+        c->lastTx = value;
         if (c->txlog) {
             fputc(value, c->txlog);
             fflush(c->txlog);
@@ -227,6 +232,37 @@ static void on_io_write(void *vctx, State8085 *state, UINT8 port, UINT8 value) {
             logRts(c, newRts, c->lastStep);
         }
     }
+}
+
+static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int max) {
+    Ctx *c = (Ctx *)vctx;
+    if (info) {
+        info->kind = "mc6850";
+        info->base = c->ctrlPort;
+        info->span = 2;
+    }
+    int n = 0;
+    struct {
+        const char *name;
+        UINT8 kind;
+        UINT32 u;
+    } items[] = {
+        {"TX", I8085_FIELD_HEX, (UINT32)(c->lastTx < 0 ? 0 : c->lastTx)},
+        {"RX", I8085_FIELD_HEX, (UINT32)(c->lastRx < 0 ? 0 : c->lastRx)},
+        {"RDRF", I8085_FIELD_BOOL, c->rdrFull ? 1u : 0u},
+        {"RTS", I8085_FIELD_BOOL, c->rtsAsserted ? 1u : 0u},
+        {"rxINT", I8085_FIELD_BOOL, c->rxIntEnabled ? 1u : 0u},
+    };
+    for (auto &it : items) {
+        if (n >= max)
+            break;
+        f[n].name = it.name;
+        f[n].kind = it.kind;
+        f[n].u = it.u;
+        f[n].s = nullptr;
+        n++;
+    }
+    return n;
 }
 
 PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *host, void **out_ctx,
@@ -292,6 +328,7 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     out_api->on_io_write = on_io_write;
     out_api->on_io_pre_read = on_io_pre_read;
     out_api->on_io_post_read = on_io_post_read;
+    out_api->snapshot = snapshot;
     *out_ctx = c;
     (void)errbuf_len;
     return 0;

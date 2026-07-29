@@ -52,6 +52,42 @@ struct IORuntimeState {
 
 static IORuntimeState gRuntime;
 
+// --- Peer introspection: back the host API's peer_count / peer_snapshot -------
+static int host_peer_count(void) {
+    return (int)gRuntime.plugins.size();
+}
+
+static int host_peer_snapshot(int idx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields) {
+    if (idx < 0 || idx >= (int)gRuntime.plugins.size())
+        return -1;
+    if (out_info) {
+        out_info->kind = nullptr;
+        out_info->base = 0;
+        out_info->span = 0;
+    }
+    PluginSlot &p = gRuntime.plugins[(size_t)idx];
+    if (!p.api.snapshot)
+        return 0; // opaque peer: exists but does not self-describe
+    return p.api.snapshot(p.ctx, out_info, out_fields, max_fields);
+}
+
+// The host API handed to every plugin: the core byte-channel services (owned by
+// io_channel) plus the peer-introspection calls (owned here). Assembled once.
+static const I8085HostAPI *runtime_host_api(void) {
+    static I8085HostAPI api;
+    static bool built = false;
+    if (!built) {
+        const I8085HostAPI *ch = io_channels_host_api();
+        if (ch)
+            api = *ch; // channel_open/read/write/close
+        api.abi_version = I8085_HOST_API_VERSION;
+        api.peer_count = host_peer_count;
+        api.peer_snapshot = host_peer_snapshot;
+        built = true;
+    }
+    return &api;
+}
+
 static void SetErr(char *errbuf, size_t errbuf_len, const char *msg) {
     if (!errbuf || errbuf_len == 0)
         return;
@@ -114,7 +150,7 @@ int io_runtime_load_plugin(const char *path, const char *config, char *errbuf, s
         dlclose(module);
         return -1;
     }
-    int rc = initFn(config, io_channels_host_api(), &pluginCtx, &api, pluginErr, sizeof(pluginErr));
+    int rc = initFn(config, runtime_host_api(), &pluginCtx, &api, pluginErr, sizeof(pluginErr));
     if (rc != 0) {
         if (pluginErr[0] != '\0')
             SetErr(errbuf, errbuf_len, pluginErr);

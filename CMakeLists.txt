@@ -46,6 +46,10 @@ endfunction()
 add_i8085_plugin(mc6850)
 # Memory-region plugin: ROM / write-protected EEPROM via the on_mem_write hook.
 add_i8085_plugin(memory)
+# Intel 8254 PIT: three free-running counters, self-describing via snapshot().
+add_i8085_plugin(pit8254)
+# Generic live board viewer: renders every peer's snapshot() to a channel.
+add_i8085_plugin(boardview)
 
 # i8085-console: raw-mode stdin<->TCP bridge, auto-spawned as a per-UART window.
 add_executable(i8085-console tools/i8085-console/i8085-console.cpp)
