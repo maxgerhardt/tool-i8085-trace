@@ -49,6 +49,9 @@ private:
     std::vector<Node> nodes_;
     std::vector<Endpoint> endpoints_;
     std::vector<Gate> gates_;
+    std::vector<Level> level_;                           // Current level of each node
+    std::vector<bool> warnedConflict_;                   // Warning tracking for conflicts
+    std::vector<bool> warnedFloat_;                      // Warning tracking for floating
 
     int nodeIndex(const std::string &name);
 };

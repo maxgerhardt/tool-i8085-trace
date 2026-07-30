@@ -119,13 +119,85 @@ bool Net::parse(const std::string &text, std::string &err) {
 
 bool Net::bind(int (*resolve)(void *ctx, const char *pin, int *is_output),
                void *ctx, std::string &err) {
-    // Stub for Task 4
+    // Walk endpoints_, call resolve for each pin, store handle/is_output
+    for (auto &ep : endpoints_) {
+        int is_output_flag = 0;
+        int handle = resolve(ctx, ep.pin.c_str(), &is_output_flag);
+        if (handle < 0) {
+            err = "failed to resolve pin " + ep.pin;
+            return false;
+        }
+        ep.handle = handle;
+        ep.is_output = (is_output_flag != 0);
+    }
+
+    // Initialize level and warning tracking vectors
+    level_.resize(nodes_.size(), LVL_X);
+    warnedConflict_.resize(nodes_.size(), false);
+    warnedFloat_.resize(nodes_.size(), false);
+
     err = "";
     return true;
 }
 
 void Net::step(const Host &host) {
-    // Stub for Tasks 2-3
+    // For each node, compute its level based on output endpoints and pull
+    for (int node_idx = 0; node_idx < (int)nodes_.size(); ++node_idx) {
+        bool has0 = false;
+        bool has1 = false;
+
+        // Read every bound OUTPUT endpoint's Drive
+        for (const auto &ep : endpoints_) {
+            if (ep.node == node_idx && ep.is_output && ep.handle >= 0) {
+                Drive drv = host.read_output(host.ctx, ep.handle);
+                if (drv == DRV_0) {
+                    has0 = true;
+                } else if (drv == DRV_1) {
+                    has1 = true;
+                }
+                // Ignore DRV_Z
+            }
+        }
+
+        // Apply resolution rule
+        Level lvl;
+        if (has0 && has1) {
+            // Conflict
+            lvl = LVL_X;
+            if (!warnedConflict_[node_idx]) {
+                host.warn(host.ctx, "conflict on node");
+                warnedConflict_[node_idx] = true;
+            }
+        } else if (has0) {
+            lvl = LVL_0;
+        } else if (has1) {
+            lvl = LVL_1;
+        } else {
+            // Neither driver is active, check pull
+            Pull pull = nodes_[node_idx].pull;
+            if (pull == PULL_UP) {
+                lvl = LVL_1;
+            } else if (pull == PULL_DOWN) {
+                lvl = LVL_0;
+            } else {
+                // PULL_NONE - floating
+                lvl = LVL_X;
+                if (!warnedFloat_[node_idx]) {
+                    host.warn(host.ctx, "floating node");
+                    warnedFloat_[node_idx] = true;
+                }
+            }
+        }
+
+        level_[node_idx] = lvl;
+    }
+
+    // Deliver resolved levels to INPUT endpoints
+    for (const auto &ep : endpoints_) {
+        if (!ep.is_output && ep.handle >= 0) {
+            host.write_input(host.ctx, ep.handle, level_[ep.node]);
+        }
+    }
 }
 
 int Net::node_count() const {
@@ -144,7 +216,10 @@ Level Net::node_level(int i) const {
     if (i < 0 || i >= (int)nodes_.size()) {
         return LVL_X;
     }
-    return LVL_X;  // Stub for now
+    if (i >= (int)level_.size()) {
+        return LVL_X;
+    }
+    return level_[i];
 }
 
 } // namespace ln
