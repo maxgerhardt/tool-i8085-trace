@@ -195,7 +195,7 @@ bool Net::bind(int (*resolve)(void *ctx, const char *pin, int *is_output),
         int is_output_flag = 0;
         int handle = resolve(ctx, ep.pin.c_str(), &is_output_flag);
         if (handle < 0) {
-            err = "failed to resolve pin " + ep.pin;
+            err = "unknown pin: " + ep.pin;
             return false;
         }
         ep.handle = handle;

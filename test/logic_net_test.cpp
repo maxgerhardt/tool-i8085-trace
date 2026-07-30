@@ -104,6 +104,14 @@ static void test_gate_conflict_detection() {
     assert(f.in[1] == ln::LVL_X && f.warns > 0);  // Real conflict detected and warned
 }
 
+static void test_bind_unknown_pin() {
+    ln::Net net; std::string err;
+    net.parse("wire N ghost@0x99.NOPE\n", err);
+    auto reject = [](void *, const char *, int *o) { *o = 0; return -1; };
+    bool ok = net.bind(reject, nullptr, err);
+    assert(!ok && err.find("unknown pin") != std::string::npos);
+}
+
 int main() {
     test_parse_basic();
     test_parse_error();
@@ -112,6 +120,7 @@ int main() {
     test_inverter_chain();
     test_and_gate();
     test_gate_conflict_detection();
+    test_bind_unknown_pin();
     printf("logic_net_test: PASS\n");
     return 0;
 }
