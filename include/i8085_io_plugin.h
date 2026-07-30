@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 
-#define I8085_IO_PLUGIN_ABI_VERSION 4u
+#define I8085_IO_PLUGIN_ABI_VERSION 5u
 // The single entry point every plugin must export (see I8085IoPluginInitFn).
 #define I8085_IO_PLUGIN_INIT_SYMBOL "i8085_io_plugin_init"
-#define I8085_HOST_API_VERSION 2u
+#define I8085_HOST_API_VERSION 3u
 
 // --- Introspection / self-description ---------------------------------------
 // A plugin may optionally describe its live state (see snapshot, below) as a
@@ -85,6 +85,11 @@ typedef struct I8085HostAPI {
     // implement snapshot yields info.kind=NULL and 0 fields. This is a pure
     // debug read: it never disturbs peer state (see snapshot, above).
     int (*peer_snapshot)(int idx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields);
+
+    // 1 once a --netlist is loaded: the logic net is authoritative for wired
+    // pins (incl. the CPU interrupt lines). Chips that had a hardcoded effect
+    // (e.g. MC6850 poking RST 7.5) must defer to the net when this is set.
+    UINT32 wiring_active;
 } I8085HostAPI;
 
 // The API struct is append-only: new callbacks are only ever added at the END,
@@ -119,6 +124,11 @@ typedef struct I8085IoPluginAPI {
     // a received byte, advance a FIFO/read-latch, or mutate any register. Read
     // internal state directly; never route through the on_io_* handlers.
     int (*snapshot)(void *ctx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields);
+
+    // Optional (plugin API v5). Deliver a resolved logic-net level to one of
+    // this plugin's INPUT pins, named as in snapshot's pin buses (bit-indexed
+    // for multi-pin buses, e.g. "CTS" or "A3"). level is 0, 1, or 2 (X/unknown).
+    void (*pin_set)(void *ctx, const char *pin, UINT8 level);
 } I8085IoPluginAPI;
 
 // Every plugin exports i8085_io_plugin_init with this signature. `host` is the
