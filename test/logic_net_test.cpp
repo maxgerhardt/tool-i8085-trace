@@ -69,11 +69,32 @@ static void test_conflict_and_float() {
     assert(f.in[2] == ln::LVL_X);
 }
 
+static void test_inverter_chain() {
+    ln::Net net; std::string err;
+    // O drives IN; inverter U1: IN -> MID; inverter U2: MID -> OUTN; input I on OUTN.
+    net.parse("wire IN O\ngate inv U1 IN MID\ngate inv U2 MID OUTN\nwire OUTN I\n", err);
+    int next = 0; net.bind(seq_resolve, &next, err);   // O=h0(out), I=h1(in)
+    Fake f = {}; ln::Host host{&f, fake_read, fake_write, fake_warn};
+    f.drv[0] = ln::DRV_0; net.step(host); assert(f.in[1] == ln::LVL_0); // 0 -> ~0=1 -> ~1=0
+    f.drv[0] = ln::DRV_1; net.step(host); assert(f.in[1] == ln::LVL_1);
+}
+
+static void test_and_gate() {
+    ln::Net net; std::string err;
+    net.parse("wire A O0\nwire B O1\ngate and G A B Y\nwire Y I\n", err);
+    int next = 0; net.bind(seq_resolve, &next, err);   // O0=h0,O1=h1(out), I=h2(in)
+    Fake f = {}; ln::Host host{&f, fake_read, fake_write, fake_warn};
+    f.drv[0]=ln::DRV_1; f.drv[1]=ln::DRV_1; net.step(host); assert(f.in[2]==ln::LVL_1);
+    f.drv[1]=ln::DRV_0; net.step(host);                    assert(f.in[2]==ln::LVL_0);
+}
+
 int main() {
     test_parse_basic();
     test_parse_error();
     test_wired_and_pullup();
     test_conflict_and_float();
+    test_inverter_chain();
+    test_and_gate();
     printf("logic_net_test: PASS\n");
     return 0;
 }

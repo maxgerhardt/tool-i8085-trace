@@ -52,8 +52,12 @@ private:
     std::vector<Level> level_;                           // Current level of each node
     std::vector<bool> warnedConflict_;                   // Warning tracking for conflicts
     std::vector<bool> warnedFloat_;                      // Warning tracking for floating
+    std::vector<Level> gateOut_;                         // Output level of each gate
+    std::vector<std::vector<int>> nodeGateSources_;      // Gate indices driving each node
+    bool warnedOscillation_;                             // Warning tracking for oscillation
 
     int nodeIndex(const std::string &name);
+    Level evalGate(const Gate &gate, const std::vector<Level> &nodeValues) const;
 };
 
 } // namespace ln

@@ -16,6 +16,77 @@ int Net::nodeIndex(const std::string &name) {
     return (int)nodes_.size() - 1;
 }
 
+Level Net::evalGate(const Gate &gate, const std::vector<Level> &nodeValues) const {
+    // Evaluate gate output based on input node values
+    // Gate truth (X-aware): INV(a):0→1,1→0,X→X. BUF(a):a.
+    // AND: any 0→0; else any X→X; else 1.
+    // OR: any 1→1; else any X→X; else 0.
+    // NAND: any 0→1; else any X→X; else 0.
+    // NOR: any 1→0; else any X→X; else 1.
+
+    switch (gate.type) {
+        case G_INV: {
+            // Single input inverter
+            if (gate.in_nodes.size() != 1) return LVL_X;
+            Level in_val = nodeValues[gate.in_nodes[0]];
+            if (in_val == LVL_0) return LVL_1;
+            if (in_val == LVL_1) return LVL_0;
+            return LVL_X;  // in_val == LVL_X
+        }
+        case G_BUF: {
+            // Single input buffer
+            if (gate.in_nodes.size() != 1) return LVL_X;
+            return nodeValues[gate.in_nodes[0]];
+        }
+        case G_AND: {
+            // AND: any 0→0; else any X→X; else 1
+            bool has_x = false;
+            for (int in_node : gate.in_nodes) {
+                Level in_val = nodeValues[in_node];
+                if (in_val == LVL_0) return LVL_0;
+                if (in_val == LVL_X) has_x = true;
+            }
+            if (has_x) return LVL_X;
+            return LVL_1;
+        }
+        case G_OR: {
+            // OR: any 1→1; else any X→X; else 0
+            bool has_x = false;
+            for (int in_node : gate.in_nodes) {
+                Level in_val = nodeValues[in_node];
+                if (in_val == LVL_1) return LVL_1;
+                if (in_val == LVL_X) has_x = true;
+            }
+            if (has_x) return LVL_X;
+            return LVL_0;
+        }
+        case G_NAND: {
+            // NAND: any 0→1; else any X→X; else 0
+            bool has_x = false;
+            for (int in_node : gate.in_nodes) {
+                Level in_val = nodeValues[in_node];
+                if (in_val == LVL_0) return LVL_1;
+                if (in_val == LVL_X) has_x = true;
+            }
+            if (has_x) return LVL_X;
+            return LVL_0;
+        }
+        case G_NOR: {
+            // NOR: any 1→0; else any X→X; else 1
+            bool has_x = false;
+            for (int in_node : gate.in_nodes) {
+                Level in_val = nodeValues[in_node];
+                if (in_val == LVL_1) return LVL_0;
+                if (in_val == LVL_X) has_x = true;
+            }
+            if (has_x) return LVL_X;
+            return LVL_1;
+        }
+        default:
+            return LVL_X;
+    }
+}
+
 bool Net::parse(const std::string &text, std::string &err) {
     std::istringstream iss(text);
     std::string line;
@@ -136,6 +207,21 @@ bool Net::bind(int (*resolve)(void *ctx, const char *pin, int *is_output),
     warnedConflict_.resize(nodes_.size(), false);
     warnedFloat_.resize(nodes_.size(), false);
 
+    // Initialize gate outputs to LVL_X
+    gateOut_.resize(gates_.size(), LVL_X);
+
+    // Precompute per-node the list of gate indices whose out_node is that node
+    nodeGateSources_.resize(nodes_.size());
+    for (size_t gate_idx = 0; gate_idx < gates_.size(); ++gate_idx) {
+        int out_node = gates_[gate_idx].out_node;
+        if (out_node >= 0 && out_node < (int)nodes_.size()) {
+            nodeGateSources_[out_node].push_back((int)gate_idx);
+        }
+    }
+
+    // Initialize oscillation warning flag
+    warnedOscillation_ = false;
+
     err = "";
     return true;
 }
@@ -145,56 +231,119 @@ void Net::step(const Host &host) {
     if ((int)level_.size() != (int)nodes_.size()) return;
     if ((int)warnedConflict_.size() != (int)nodes_.size()) return;
     if ((int)warnedFloat_.size() != (int)nodes_.size()) return;
+    if ((int)gateOut_.size() != (int)gates_.size()) return;
+    if ((int)nodeGateSources_.size() != (int)nodes_.size()) return;
 
-    // For each node, compute its level based on output endpoints and pull
-    for (int node_idx = 0; node_idx < (int)nodes_.size(); ++node_idx) {
-        bool has0 = false;
-        bool has1 = false;
+    // Read pin drivers ONCE at top of step(); cache per output endpoint
+    std::vector<Drive> pin_drivers(endpoints_.size());
+    for (size_t i = 0; i < endpoints_.size(); ++i) {
+        if (endpoints_[i].is_output && endpoints_[i].handle >= 0) {
+            pin_drivers[i] = host.read_output(host.ctx, endpoints_[i].handle);
+        } else {
+            pin_drivers[i] = DRV_Z;  // Dummy value for non-output endpoints
+        }
+    }
 
-        // Read every bound OUTPUT endpoint's Drive
-        for (const auto &ep : endpoints_) {
-            if (ep.node == node_idx && ep.is_output && ep.handle >= 0) {
-                Drive drv = host.read_output(host.ctx, ep.handle);
-                if (drv == DRV_0) {
+    // Settle loop: up to 16 passes
+    const int MAX_PASSES = 16;
+    bool oscillating = false;
+    for (int pass = 0; pass < MAX_PASSES; ++pass) {
+        bool level_changed = false;
+        bool gateOut_changed = false;
+
+        // (a) Resolve all nodes
+        for (int node_idx = 0; node_idx < (int)nodes_.size(); ++node_idx) {
+            bool has0 = false;
+            bool has1 = false;
+
+            // Read every bound OUTPUT endpoint's Drive for this node
+            for (size_t ep_idx = 0; ep_idx < endpoints_.size(); ++ep_idx) {
+                const auto &ep = endpoints_[ep_idx];
+                if (ep.node == node_idx && ep.is_output && ep.handle >= 0) {
+                    Drive drv = pin_drivers[ep_idx];
+                    if (drv == DRV_0) {
+                        has0 = true;
+                    } else if (drv == DRV_1) {
+                        has1 = true;
+                    }
+                    // Ignore DRV_Z
+                }
+            }
+
+            // Treat each gate driving this node as a driver
+            for (int gate_idx : nodeGateSources_[node_idx]) {
+                Level gate_out = gateOut_[gate_idx];
+                if (gate_out == LVL_0) {
                     has0 = true;
-                } else if (drv == DRV_1) {
+                } else if (gate_out == LVL_1) {
+                    has1 = true;
+                } else if (gate_out == LVL_X) {
+                    // LVL_X forces node to LVL_X
+                    has0 = true;
                     has1 = true;
                 }
-                // Ignore DRV_Z
             }
-        }
 
-        // Apply resolution rule
-        Level lvl;
-        if (has0 && has1) {
-            // Conflict
-            lvl = LVL_X;
-            if (!warnedConflict_[node_idx]) {
-                host.warn(host.ctx, "conflict on node");
-                warnedConflict_[node_idx] = true;
-            }
-        } else if (has0) {
-            lvl = LVL_0;
-        } else if (has1) {
-            lvl = LVL_1;
-        } else {
-            // Neither driver is active, check pull
-            Pull pull = nodes_[node_idx].pull;
-            if (pull == PULL_UP) {
-                lvl = LVL_1;
-            } else if (pull == PULL_DOWN) {
-                lvl = LVL_0;
-            } else {
-                // PULL_NONE - floating
+            // Apply resolution rule
+            Level lvl;
+            if (has0 && has1) {
+                // Conflict
                 lvl = LVL_X;
-                if (!warnedFloat_[node_idx]) {
-                    host.warn(host.ctx, "floating node");
-                    warnedFloat_[node_idx] = true;
+                if (!warnedConflict_[node_idx]) {
+                    host.warn(host.ctx, "conflict on node");
+                    warnedConflict_[node_idx] = true;
+                }
+            } else if (has0) {
+                lvl = LVL_0;
+            } else if (has1) {
+                lvl = LVL_1;
+            } else {
+                // Neither driver is active, check pull
+                Pull pull = nodes_[node_idx].pull;
+                if (pull == PULL_UP) {
+                    lvl = LVL_1;
+                } else if (pull == PULL_DOWN) {
+                    lvl = LVL_0;
+                } else {
+                    // PULL_NONE - floating
+                    lvl = LVL_X;
+                    if (!warnedFloat_[node_idx]) {
+                        host.warn(host.ctx, "floating node");
+                        warnedFloat_[node_idx] = true;
+                    }
                 }
             }
+
+            if (level_[node_idx] != lvl) {
+                level_[node_idx] = lvl;
+                level_changed = true;
+            }
         }
 
-        level_[node_idx] = lvl;
+        // (b) Recompute each gate from its input nodes
+        for (size_t gate_idx = 0; gate_idx < gates_.size(); ++gate_idx) {
+            Level new_out = evalGate(gates_[gate_idx], level_);
+            if (gateOut_[gate_idx] != new_out) {
+                gateOut_[gate_idx] = new_out;
+                gateOut_changed = true;
+            }
+        }
+
+        // Stop if neither changed
+        if (!level_changed && !gateOut_changed) {
+            break;
+        }
+
+        // Check if we're on the last pass
+        if (pass == MAX_PASSES - 1) {
+            oscillating = true;
+        }
+    }
+
+    // Warn once if oscillation detected
+    if (oscillating && !warnedOscillation_) {
+        host.warn(host.ctx, "oscillation");
+        warnedOscillation_ = true;
     }
 
     // Deliver resolved levels to INPUT endpoints
