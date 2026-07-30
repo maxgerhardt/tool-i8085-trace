@@ -44,6 +44,8 @@ struct Ctx {
 
     UINT8 outA = 0, outB = 0, outC = 0; // output latches
     UINT8 inA = 0, inB = 0, inC = 0;    // external input pin values (from config)
+
+    I8085PinBus busA{}, busB{}, busC{}; // filled on demand by snapshot()
 };
 
 static std::string cfgValue(const char *config, const char *key) {
@@ -154,19 +156,23 @@ static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int m
         info->base = c->base;
         info->span = 4;
     }
+    // Refresh the pin buses. Port C's two nibbles are directed independently
+    // (PC0-3 by cLowerIn, PC4-7 by cUpperIn), so its is_input mask is a blend.
+    c->busA = {8, readPort(c, 0), c->aIn ? 0xFFu : 0u, 0};
+    c->busB = {8, readPort(c, 1), c->bIn ? 0xFFu : 0u, 0};
+    c->busC = {8, readPort(c, 2), (c->cLowerIn ? 0x0Fu : 0u) | (c->cUpperIn ? 0xF0u : 0u), 0};
+
     int n = 0;
-    auto add = [&](const char *name, UINT8 kind, UINT32 u, const char *s) {
+    auto add = [&](const char *name, UINT8 kind, UINT32 u, const char *s, const I8085PinBus *bus) {
         if (n < max) {
-            f[n] = {name, kind, u, s};
+            f[n] = {name, kind, u, s, bus};
             n++;
         }
     };
-    add("PA", I8085_FIELD_HEX, readPort(c, 0), nullptr);
-    add("PB", I8085_FIELD_HEX, readPort(c, 1), nullptr);
-    add("PC", I8085_FIELD_HEX, readPort(c, 2), nullptr);
-    add("Adir", I8085_FIELD_STR, 0, c->aIn ? "in" : "out");
-    add("Bdir", I8085_FIELD_STR, 0, c->bIn ? "in" : "out");
-    add("ctrl", I8085_FIELD_HEX, c->ctrl, nullptr);
+    add("A", I8085_FIELD_PINS, 0, nullptr, &c->busA);
+    add("B", I8085_FIELD_PINS, 0, nullptr, &c->busB);
+    add("C", I8085_FIELD_PINS, 0, nullptr, &c->busC);
+    add("ctrl", I8085_FIELD_HEX, c->ctrl, nullptr, nullptr);
     return n;
 }
 

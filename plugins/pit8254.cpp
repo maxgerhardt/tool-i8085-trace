@@ -59,6 +59,7 @@ struct Ctx {
     UINT64 lastTstates = 0;
     UINT64 clkAccum = 0; // leftover t-states not yet turned into a PIT tick
     Counter c[3];
+    I8085PinBus busOut{}; // the three OUT pins, filled on demand by snapshot()
 };
 
 static std::string cfgValue(const char *config, const char *key) {
@@ -262,7 +263,6 @@ static void on_reset(void *vctx, State8085 *state) {
 
 static const char *const kCntNames[3] = {"C0", "C1", "C2"};
 static const char *const kModeNames[3] = {"mode0", "mode1", "mode2"};
-static const char *const kOutNames[3] = {"OUT0", "OUT1", "OUT2"};
 
 static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int max) {
     Ctx *ctx = (Ctx *)vctx;
@@ -272,21 +272,17 @@ static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int m
         info->span = 4;
     }
     int n = 0;
-    for (int i = 0; i < 3 && n + 3 <= max; i++) {
-        f[n].name = kCntNames[i];
-        f[n].kind = I8085_FIELD_U16;
-        f[n].u = ctx->c[i].count;
-        f[n].s = nullptr;
+    for (int i = 0; i < 3 && n + 2 <= max; i++) {
+        f[n] = {kCntNames[i], I8085_FIELD_U16, ctx->c[i].count, nullptr, nullptr};
         n++;
-        f[n].name = kModeNames[i];
-        f[n].kind = I8085_FIELD_U8;
-        f[n].u = ctx->c[i].mode;
-        f[n].s = nullptr;
+        f[n] = {kModeNames[i], I8085_FIELD_U8, ctx->c[i].mode, nullptr, nullptr};
         n++;
-        f[n].name = kOutNames[i];
-        f[n].kind = I8085_FIELD_BOOL;
-        f[n].u = ctx->c[i].out ? 1 : 0;
-        f[n].s = nullptr;
+    }
+    // The three OUT pins as an output bus (reuses the generic pin-bus renderer).
+    UINT32 lvl = (ctx->c[0].out ? 1u : 0u) | (ctx->c[1].out ? 2u : 0u) | (ctx->c[2].out ? 4u : 0u);
+    ctx->busOut = {3, lvl, 0u /* all outputs */, 0u};
+    if (n < max) {
+        f[n] = {"OUT", I8085_FIELD_PINS, 0, nullptr, &ctx->busOut};
         n++;
     }
     return n;

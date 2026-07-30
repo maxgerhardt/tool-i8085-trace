@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define I8085_IO_PLUGIN_ABI_VERSION 3u
+#define I8085_IO_PLUGIN_ABI_VERSION 4u
 // The single entry point every plugin must export (see I8085IoPluginInitFn).
 #define I8085_IO_PLUGIN_INIT_SYMBOL "i8085_io_plugin_init"
 #define I8085_HOST_API_VERSION 2u
@@ -23,14 +23,28 @@ enum {
     I8085_FIELD_U32 = 2,  // unsigned, print decimal
     I8085_FIELD_HEX = 3,  // unsigned, print 0x-hex
     I8085_FIELD_BOOL = 4, // 0/1
-    I8085_FIELD_STR = 5   // use `s` instead of `u`
+    I8085_FIELD_STR = 5,  // use `s` instead of `u`
+    I8085_FIELD_PINS = 6  // a bit-bus of individually-directed pins (use `bus`)
 };
 
+// A bus of up to 32 individually-directed pins. Lets a chip expose e.g. an
+// 8255 port whose bits may be a mix of inputs and outputs (Port C splits into
+// independently-directed nibbles), so a generic viewer can draw each pin with
+// its own direction and level -- inward arrow + level for inputs, driven
+// (glowing) level for outputs -- without any chip-specific knowledge.
+typedef struct I8085PinBus {
+    UINT8 width;     // number of pins in use, bit 0 = pin 0
+    UINT32 level;    // bit i = current logic level of pin i (0/1)
+    UINT32 is_input; // bit i = 1 -> pin i is an input (else an output)
+    UINT32 hi_z;     // bit i = 1 -> pin i is tri-stated / not driven (optional)
+} I8085PinBus;
+
 typedef struct I8085StateField {
-    const char *name; // static or ctx-lived string (must outlive the call)
-    UINT8 kind;       // one of I8085_FIELD_*
-    UINT32 u;         // numeric value (kinds U8/U16/U32/HEX/BOOL)
-    const char *s;    // string value (kind STR); else NULL
+    const char *name;         // static or ctx-lived string (must outlive the call)
+    UINT8 kind;               // one of I8085_FIELD_*
+    UINT32 u;                 // numeric value (kinds U8/U16/U32/HEX/BOOL)
+    const char *s;            // string value (kind STR); else NULL
+    const I8085PinBus *bus;   // pin bus (kind PINS); else NULL. Must outlive call
 } I8085StateField;
 
 // What a plugin instance is and where it lives on the bus.

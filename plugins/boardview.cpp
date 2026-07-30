@@ -76,6 +76,36 @@ static void appendField(std::string &line, const I8085StateField &f) {
     line += buf;
 }
 
+// One pin's glyph. Inputs show an inward arrow + the externally applied level;
+// outputs show the driven level, "glowing" bright for 1 / dim for 0 under ANSI.
+static void appendPin(std::string &row, bool input, bool hiz, bool level, bool ansi) {
+    char buf[24];
+    if (hiz) {
+        row += ansi ? "\x1b[2m--\x1b[0m" : "z-";
+    } else if (input) {
+        snprintf(buf, sizeof buf, ansi ? "\x1b[36m>%d\x1b[0m" : "i%d", level ? 1 : 0);
+        row += buf;
+    } else {
+        snprintf(buf, sizeof buf, ansi ? (level ? "\x1b[1;32m%d\x1b[0m" : "\x1b[2m%d\x1b[0m") : "o%d",
+                 level ? 1 : 0);
+        row += buf;
+    }
+}
+
+static void appendPinBus(std::string &out, const char *name, const I8085PinBus *b, bool ansi) {
+    if (!b)
+        return;
+    char lead[24];
+    snprintf(lead, sizeof lead, "    %-4s ", name ? name : "");
+    std::string row = lead;
+    for (int bit = (int)b->width - 1; bit >= 0; bit--) { // MSB..LSB, like a byte
+        appendPin(row, (b->is_input >> bit) & 1, (b->hi_z >> bit) & 1, (b->level >> bit) & 1, ansi);
+        row += ' ';
+    }
+    out += row;
+    out += '\n';
+}
+
 static void render(Ctx *c, UINT64 step) {
     if (!c->host || !c->host->peer_count || !c->host->peer_snapshot)
         return;
@@ -91,7 +121,7 @@ static void render(Ctx *c, UINT64 step) {
     int peers = c->host->peer_count();
     for (int i = 0; i < peers; i++) {
         I8085PluginInfo info = {nullptr, 0, 0};
-        I8085StateField fields[32];
+        I8085StateField fields[32] = {}; // zero-init: PINS `bus` NULL unless set
         int n = c->host->peer_snapshot(i, &info, fields, 32);
         if (n < 0 || !info.kind)
             continue; // out of range, or an opaque peer (incl. this viewer)
@@ -103,10 +133,16 @@ static void render(Ctx *c, UINT64 step) {
         else
             snprintf(head, sizeof head, "[%-8s]", info.kind);
         std::string line = head;
-        for (int j = 0; j < n; j++)
-            appendField(line, fields[j]);
+        std::string pinRows;
+        for (int j = 0; j < n; j++) {
+            if (fields[j].kind == I8085_FIELD_PINS)
+                appendPinBus(pinRows, fields[j].name, fields[j].bus, c->ansi); // its own row
+            else
+                appendField(line, fields[j]); // scalar: inline on the header line
+        }
         line += "\n";
         frame += line;
+        frame += pinRows;
     }
 
     if (c->host->channel_write)
