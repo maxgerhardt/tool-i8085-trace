@@ -12,6 +12,11 @@ void io_runtime_set_trace(int enabled);
 int io_runtime_load_plugin(const char *path, const char *config, char *errbuf, size_t errbuf_len);
 // Unload ALL loaded plugins.
 void io_runtime_unload_plugin(void);
+// Load a --netlist wiring description: reads `path`, parses it, and binds each
+// wire endpoint to a loaded plugin's pin (see logic_net.h). On success the net
+// is stepped once per io_runtime_on_step() call and the host API's
+// wiring_active flag is set. Returns 0 on success, -1 on error (errbuf filled).
+int io_runtime_load_netlist(const char *path, char *errbuf, size_t errbuf_len);
 void io_runtime_set_state(State8085 *state);
 void io_runtime_on_reset(void);
 void io_runtime_on_step(UINT64 step, UINT64 tstates);

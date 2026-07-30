@@ -12,6 +12,7 @@ add_executable(i8085-trace
     src/io_channel.cpp
     src/disk_emu.cpp
     src/gdb_stub.cpp
+    src/logic_net.cpp
     src/i8085_exec.c
     src/i8085_state.c
     src/i8085_disasm.c

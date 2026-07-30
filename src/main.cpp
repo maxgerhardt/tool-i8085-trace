@@ -77,6 +77,7 @@ struct Config {
     bool tracepointStop = false;
     std::vector<IOInit> ioInit;
     std::vector<IOPluginSpec> ioPlugins;
+    const char *netlistFile = nullptr;
     bool ioTrace = false;
     int sidInit = -1;
     int gdbPort = 0;
@@ -114,6 +115,7 @@ static void PrintUsage(const char *prog) {
     fprintf(stderr, "  --io=PORT:VAL         Initialize I/O port value (hex, can repeat)\n");
     fprintf(stderr, "  --io-plugin=PATH      Load runtime I/O plugin shared library\n");
     fprintf(stderr, "  --io-plugin-config=S  Opaque config string passed to plugin init\n");
+    fprintf(stderr, "  --netlist=FILE        Load a logic-net wiring description (see logic_net.h)\n");
     fprintf(stderr, "  --io-trace            Log IN/OUT operations to stderr\n");
     fprintf(stderr, "  --disk=DIR            Enable disk emulator with files in DIR\n");
     fprintf(stderr, "  --sid=LEVEL           Set SID input line (0 or 1)\n");
@@ -590,6 +592,7 @@ int main(int argc, char *argv[]) {
                                        {"io-plugin-config", required_argument, nullptr, 1002},
                                        {"io-trace", no_argument, nullptr, 'O'},
                                        {"disk", required_argument, nullptr, 1003},
+                                       {"netlist", required_argument, nullptr, 1004},
                                        {"sid", required_argument, nullptr, 'y'},
                                        {"tracepoint", required_argument, nullptr, 't'},
                                        {"tracepoint-file", required_argument, nullptr, 'T'},
@@ -695,6 +698,9 @@ int main(int argc, char *argv[]) {
             break;
         case 1003:
             cfg.diskDir = optarg;
+            break;
+        case 1004:
+            cfg.netlistFile = optarg;
             break;
         case 'y': {
             char *end = nullptr;
@@ -812,6 +818,16 @@ int main(int argc, char *argv[]) {
         char err[512] = {0};
         if (io_runtime_load_plugin(spec.path, spec.config ? spec.config : "", err, sizeof(err)) != 0) {
             fprintf(stderr, "Error: Failed to load I/O plugin '%s': %s\n", spec.path,
+                    (err[0] != '\0') ? err : "unknown error");
+            io_runtime_unload_plugin();
+            Free8085(state);
+            return 1;
+        }
+    }
+    if (cfg.netlistFile) {
+        char err[512] = {0};
+        if (io_runtime_load_netlist(cfg.netlistFile, err, sizeof(err)) != 0) {
+            fprintf(stderr, "Error: Failed to load netlist '%s': %s\n", cfg.netlistFile,
                     (err[0] != '\0') ? err : "unknown error");
             io_runtime_unload_plugin();
             Free8085(state);
