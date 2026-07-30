@@ -62,3 +62,7 @@ if(UNIX)
     find_package(Threads REQUIRED)
     target_link_libraries(i8085-console PRIVATE Threads::Threads)
 endif()
+
+# Standalone unit test for the logic-net core (assert-based).
+add_executable(test_logic_net test/logic_net_test.cpp src/logic_net.cpp)
+target_include_directories(test_logic_net PRIVATE src)
