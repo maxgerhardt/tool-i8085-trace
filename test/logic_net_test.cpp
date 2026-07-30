@@ -75,8 +75,12 @@ static void test_inverter_chain() {
     net.parse("wire IN O\ngate inv U1 IN MID\ngate inv U2 MID OUTN\nwire OUTN I\n", err);
     int next = 0; net.bind(seq_resolve, &next, err);   // O=h0(out), I=h1(in)
     Fake f = {}; ln::Host host{&f, fake_read, fake_write, fake_warn};
-    f.drv[0] = ln::DRV_0; net.step(host); assert(f.in[1] == ln::LVL_0); // 0 -> ~0=1 -> ~1=0
-    f.drv[0] = ln::DRV_1; net.step(host); assert(f.in[1] == ln::LVL_1);
+    f.drv[0] = ln::DRV_0; net.step(host);
+    assert(f.in[1] == ln::LVL_0); // 0 -> ~0=1 -> ~1=0
+    assert(f.warns == 0);  // No spurious conflict warnings from gate-forced-X
+    f.drv[0] = ln::DRV_1; net.step(host);
+    assert(f.in[1] == ln::LVL_1);
+    assert(f.warns == 0);  // Still no warnings
 }
 
 static void test_and_gate() {
@@ -88,6 +92,18 @@ static void test_and_gate() {
     f.drv[1]=ln::DRV_0; net.step(host);                    assert(f.in[2]==ln::LVL_0);
 }
 
+static void test_gate_conflict_detection() {
+    ln::Net net; std::string err;
+    // Two gate outputs driving the same node with opposite values: Y1=1, Y2=0
+    // gate buf U1 A Y; gate inv U2 A Y (both drive Y)
+    net.parse("wire A O\ngate buf U1 A Y\ngate inv U2 A Y\nwire Y I\n", err);
+    int next = 0; net.bind(seq_resolve, &next, err);   // O=h0(out), I=h1(in)
+    Fake f = {}; ln::Host host{&f, fake_read, fake_write, fake_warn};
+    f.drv[0] = ln::DRV_1; net.step(host);
+    // U1 (buf) outputs 1, U2 (inv) outputs 0 -> real conflict
+    assert(f.in[1] == ln::LVL_X && f.warns > 0);  // Real conflict detected and warned
+}
+
 int main() {
     test_parse_basic();
     test_parse_error();
@@ -95,6 +111,7 @@ int main() {
     test_conflict_and_float();
     test_inverter_chain();
     test_and_gate();
+    test_gate_conflict_detection();
     printf("logic_net_test: PASS\n");
     return 0;
 }

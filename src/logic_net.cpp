@@ -255,6 +255,7 @@ void Net::step(const Host &host) {
         for (int node_idx = 0; node_idx < (int)nodes_.size(); ++node_idx) {
             bool has0 = false;
             bool has1 = false;
+            bool gateX = false;
 
             // Read every bound OUTPUT endpoint's Drive for this node
             for (size_t ep_idx = 0; ep_idx < endpoints_.size(); ++ep_idx) {
@@ -271,6 +272,7 @@ void Net::step(const Host &host) {
             }
 
             // Treat each gate driving this node as a driver
+            // Only settled gate outputs (LVL_0/LVL_1) contribute to has0/has1
             for (int gate_idx : nodeGateSources_[node_idx]) {
                 Level gate_out = gateOut_[gate_idx];
                 if (gate_out == LVL_0) {
@@ -278,21 +280,23 @@ void Net::step(const Host &host) {
                 } else if (gate_out == LVL_1) {
                     has1 = true;
                 } else if (gate_out == LVL_X) {
-                    // LVL_X forces node to LVL_X
-                    has0 = true;
-                    has1 = true;
+                    // Gate is forcing X: track separately from real conflict
+                    gateX = true;
                 }
             }
 
-            // Apply resolution rule
+            // Apply resolution rule with proper precedence
             Level lvl;
             if (has0 && has1) {
-                // Conflict
+                // Real conflict: two settled drivers pushing opposite values
                 lvl = LVL_X;
                 if (!warnedConflict_[node_idx]) {
                     host.warn(host.ctx, "conflict on node");
                     warnedConflict_[node_idx] = true;
                 }
+            } else if (gateX) {
+                // Gate forcing X (no real conflict)
+                lvl = LVL_X;
             } else if (has0) {
                 lvl = LVL_0;
             } else if (has1) {
