@@ -48,6 +48,8 @@ add_i8085_plugin(mc6850)
 add_i8085_plugin(memory)
 # Intel 8254 PIT: three free-running counters, self-describing via snapshot().
 add_i8085_plugin(pit8254)
+# Intel 8255 PPI: three parallel ports + control word, self-describing.
+add_i8085_plugin(i8255)
 # Generic live board viewer: renders every peer's snapshot() to a channel.
 add_i8085_plugin(boardview)
 
