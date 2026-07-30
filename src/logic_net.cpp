@@ -141,6 +141,11 @@ bool Net::bind(int (*resolve)(void *ctx, const char *pin, int *is_output),
 }
 
 void Net::step(const Host &host) {
+    // Guard: vectors must be properly sized by bind()
+    if ((int)level_.size() != (int)nodes_.size()) return;
+    if ((int)warnedConflict_.size() != (int)nodes_.size()) return;
+    if ((int)warnedFloat_.size() != (int)nodes_.size()) return;
+
     // For each node, compute its level based on output endpoints and pull
     for (int node_idx = 0; node_idx < (int)nodes_.size(); ++node_idx) {
         bool has0 = false;
