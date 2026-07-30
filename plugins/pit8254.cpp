@@ -58,8 +58,9 @@ struct Ctx {
     UINT32 clkdiv = 1;
     UINT64 lastTstates = 0;
     UINT64 clkAccum = 0; // leftover t-states not yet turned into a PIT tick
+    UINT8 gateMask = 0x7; // bit i = GATE i level; a low gate freezes counter i
     Counter c[3];
-    I8085PinBus busOut{}; // the three OUT pins, filled on demand by snapshot()
+    I8085PinBus busOut{}, busGate{}; // OUT / GATE pins, filled by snapshot()
 };
 
 static std::string cfgValue(const char *config, const char *key) {
@@ -223,7 +224,8 @@ static void on_step(void *vctx, State8085 *state, UINT64 step, UINT64 tstates) {
         ticks = 0x40000;
     for (UINT64 t = 0; t < ticks; t++)
         for (int i = 0; i < 3; i++)
-            tickCounter(ctx->c[i]);
+            if ((ctx->gateMask >> i) & 1) // a low GATE freezes its counter
+                tickCounter(ctx->c[i]);
 }
 
 static void on_io_pre_read(void *vctx, State8085 *state, UINT8 port) {
@@ -278,9 +280,14 @@ static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int m
         f[n] = {kModeNames[i], I8085_FIELD_U8, ctx->c[i].mode, nullptr, nullptr};
         n++;
     }
-    // The three OUT pins as an output bus (reuses the generic pin-bus renderer).
+    // GATE inputs (external) and OUT outputs, as pin buses.
+    ctx->busGate = {3, (UINT32)(ctx->gateMask & 0x7), 0x7u /* all inputs */, 0u};
     UINT32 lvl = (ctx->c[0].out ? 1u : 0u) | (ctx->c[1].out ? 2u : 0u) | (ctx->c[2].out ? 4u : 0u);
     ctx->busOut = {3, lvl, 0u /* all outputs */, 0u};
+    if (n < max) {
+        f[n] = {"GATE", I8085_FIELD_PINS, 0, nullptr, &ctx->busGate};
+        n++;
+    }
     if (n < max) {
         f[n] = {"OUT", I8085_FIELD_PINS, 0, nullptr, &ctx->busOut};
         n++;
@@ -302,6 +309,7 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     ctx->clkdiv = parseNum(cfgValue(config, "clkdiv"), 1);
     if (ctx->clkdiv == 0)
         ctx->clkdiv = 1;
+    ctx->gateMask = (UINT8)(parseNum(cfgValue(config, "gate"), 0x7) & 0x7);
 
     out_api->abi_version = I8085_IO_PLUGIN_ABI_VERSION;
     out_api->destroy = destroy;

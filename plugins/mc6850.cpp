@@ -60,6 +60,12 @@ struct Ctx {
     int lastTx = -1; // last byte transmitted by the CPU (-1 = none yet)
     int lastRx = -1; // last byte the CPU read out of the RDR (-1 = none yet)
 
+    // Modem lines (level 1 = asserted). /CTS and /DCD are inputs supplied by
+    // config (no real modem wired); display-only, they do not gate TX/RX here.
+    int ctsLevel = 1; // /CTS: clear to send (default asserted)
+    int dcdLevel = 1; // /DCD: data carrier detect (default asserted)
+    I8085PinBus busRTS{}, busIRQ{}, busCTS{}, busDCD{};
+
     // Interactive / mirror backends, provided by the core (tcp, window, stdout,
     // gdbtx). The plugin reads received bytes from and writes TX bytes to these.
     const I8085HostAPI *host = nullptr;
@@ -241,27 +247,28 @@ static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int m
         info->base = c->ctrlPort;
         info->span = 2;
     }
+    // Each modem line is a 1-pin bus so it renders as a named pin (arrow/glow).
+    // /IRQ (output) asserts while a received byte is pending with RX-int enabled.
+    UINT32 irq = (c->rdrFull && c->rxIntEnabled) ? 1u : 0u;
+    c->busRTS = {1, c->rtsAsserted ? 1u : 0u, 0u, 0u};   // output
+    c->busIRQ = {1, irq, 0u, 0u};                        // output
+    c->busCTS = {1, (UINT32)(c->ctsLevel & 1), 1u, 0u};  // input
+    c->busDCD = {1, (UINT32)(c->dcdLevel & 1), 1u, 0u};  // input
+
     int n = 0;
-    struct {
-        const char *name;
-        UINT8 kind;
-        UINT32 u;
-    } items[] = {
-        {"TX", I8085_FIELD_HEX, (UINT32)(c->lastTx < 0 ? 0 : c->lastTx)},
-        {"RX", I8085_FIELD_HEX, (UINT32)(c->lastRx < 0 ? 0 : c->lastRx)},
-        {"RDRF", I8085_FIELD_BOOL, c->rdrFull ? 1u : 0u},
-        {"RTS", I8085_FIELD_BOOL, c->rtsAsserted ? 1u : 0u},
-        {"rxINT", I8085_FIELD_BOOL, c->rxIntEnabled ? 1u : 0u},
+    auto add = [&](const char *name, UINT8 kind, UINT32 u, const I8085PinBus *bus) {
+        if (n < max) {
+            f[n] = {name, kind, u, nullptr, bus};
+            n++;
+        }
     };
-    for (auto &it : items) {
-        if (n >= max)
-            break;
-        f[n].name = it.name;
-        f[n].kind = it.kind;
-        f[n].u = it.u;
-        f[n].s = nullptr;
-        n++;
-    }
+    add("TX", I8085_FIELD_HEX, (UINT32)(c->lastTx < 0 ? 0 : c->lastTx), nullptr);
+    add("RX", I8085_FIELD_HEX, (UINT32)(c->lastRx < 0 ? 0 : c->lastRx), nullptr);
+    add("RDRF", I8085_FIELD_BOOL, c->rdrFull ? 1u : 0u, nullptr);
+    add("RTS", I8085_FIELD_PINS, 0, &c->busRTS);
+    add("IRQ", I8085_FIELD_PINS, 0, &c->busIRQ);
+    add("CTS", I8085_FIELD_PINS, 0, &c->busCTS);
+    add("DCD", I8085_FIELD_PINS, 0, &c->busDCD);
     return n;
 }
 
@@ -308,6 +315,14 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     std::string bg = cfgValue(config, "bytegap");
     if (!bg.empty())
         c->bytegap = strtoull(bg.c_str(), nullptr, 10);
+
+    // External modem input levels (display-only pins). Default asserted.
+    std::string cts = cfgValue(config, "cts");
+    if (!cts.empty())
+        c->ctsLevel = truthy(cts) ? 1 : (int)strtol(cts.c_str(), nullptr, 0);
+    std::string dcd = cfgValue(config, "dcd");
+    if (!dcd.empty())
+        c->dcdLevel = truthy(dcd) ? 1 : (int)strtol(dcd.c_str(), nullptr, 0);
 
     if (truthy(cfgValue(config, "gdbtx")))
         openChannel(c, "gdbtx");

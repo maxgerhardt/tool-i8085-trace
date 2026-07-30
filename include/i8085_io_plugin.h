@@ -82,7 +82,8 @@ typedef struct I8085HostAPI {
     // Snapshot peer `idx` in [0,peer_count): fills out_info and up to max_fields
     // of out_fields from that peer's snapshot callback. Returns the number of
     // fields written (>=0), or -1 if idx is out of range. A peer that does not
-    // implement snapshot yields info.kind=NULL and 0 fields.
+    // implement snapshot yields info.kind=NULL and 0 fields. This is a pure
+    // debug read: it never disturbs peer state (see snapshot, above).
     int (*peer_snapshot)(int idx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields);
 } I8085HostAPI;
 
@@ -111,6 +112,12 @@ typedef struct I8085IoPluginAPI {
     // state for a board-view consumer. Fill out_info and up to max_fields of
     // out_fields; return the number of fields written. Called on demand (never
     // on the hot path). Field name/string pointers must outlive the call.
+    //
+    // MUST be side-effect-free: a pure "debug read". Unlike a CPU bus read
+    // (on_io_post_read), snapshot is invoked out of band by observers, so it
+    // MUST NOT do anything a real read would -- do not clear interrupts, consume
+    // a received byte, advance a FIFO/read-latch, or mutate any register. Read
+    // internal state directly; never route through the on_io_* handlers.
     int (*snapshot)(void *ctx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields);
 } I8085IoPluginAPI;
 
