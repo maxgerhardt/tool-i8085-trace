@@ -54,7 +54,7 @@ private:
     std::vector<bool> warnedFloat_;                      // Warning tracking for floating
     std::vector<Level> gateOut_;                         // Output level of each gate
     std::vector<std::vector<int>> nodeGateSources_;      // Gate indices driving each node
-    bool warnedOscillation_;                             // Warning tracking for oscillation
+    bool warnedOscillation_ = false;                      // Warning tracking for oscillation
 
     int nodeIndex(const std::string &name);
     Level evalGate(const Gate &gate, const std::vector<Level> &nodeValues) const;

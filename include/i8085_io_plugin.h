@@ -115,8 +115,11 @@ typedef struct I8085IoPluginAPI {
 
     // Optional (host/plugin API v3). Describe this instance's identity and live
     // state for a board-view consumer. Fill out_info and up to max_fields of
-    // out_fields; return the number of fields written. Called on demand (never
-    // on the hot path). Field name/string pointers must outlive the call.
+    // out_fields; return the number of fields written. Field name/string
+    // pointers must outlive the call. Note: the logic-net engine may call this
+    // every CPU step for wired output pins, so it MUST be cheap as well as
+    // side-effect-free/pure (see below) -- do not assume it is only called
+    // on demand.
     //
     // MUST be side-effect-free: a pure "debug read". Unlike a CPU bus read
     // (on_io_post_read), snapshot is invoked out of band by observers, so it

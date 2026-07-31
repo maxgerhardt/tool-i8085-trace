@@ -62,7 +62,7 @@ static void test_conflict_and_float() {
     ln::Net net; std::string err;
     net.parse("wire N O0\nwire N O1\nwire N I\n", err);   // no pull
     int next = 0; net.bind(seq_resolve, &next, err);
-    Fake f; ln::Host host{&f, fake_read, fake_write, fake_warn};
+    Fake f = {}; ln::Host host{&f, fake_read, fake_write, fake_warn};
     f.drv[0] = ln::DRV_0; f.drv[1] = ln::DRV_1; net.step(host);   // conflict
     assert(f.in[2] == ln::LVL_X && f.warns >= 1);
     f.drv[0] = ln::DRV_Z; f.drv[1] = ln::DRV_Z; net.step(host);   // floating

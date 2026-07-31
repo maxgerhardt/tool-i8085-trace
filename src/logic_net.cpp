@@ -97,8 +97,8 @@ bool Net::parse(const std::string &text, std::string &err) {
 
         // Trim leading/trailing whitespace
         size_t start = 0;
-        while (start < line.size() && std::isspace(line[start])) ++start;
-        while (line.size() > start && std::isspace(line.back())) line.pop_back();
+        while (start < line.size() && std::isspace((unsigned char)line[start])) ++start;
+        while (line.size() > start && std::isspace((unsigned char)line.back())) line.pop_back();
         line = line.substr(start);
 
         // Skip empty lines and comments
@@ -143,7 +143,7 @@ bool Net::parse(const std::string &text, std::string &err) {
             int idx = nodeIndex(tokens[1]);
             endpoints_.push_back(Endpoint{idx, tokens[2], -1, false});
         } else if (directive == "gate") {
-            if (tokens.size() < 4) {
+            if (tokens.size() < 5) {
                 err = "line " + std::to_string(line_num) + ": gate requires type, name, and at least one input and one output";
                 return false;
             }
@@ -203,6 +203,7 @@ bool Net::bind(int (*resolve)(void *ctx, const char *pin, int *is_output),
     }
 
     // Initialize level and warning tracking vectors
+    nodeGateSources_.assign(nodes_.size(), {});
     level_.resize(nodes_.size(), LVL_X);
     warnedConflict_.resize(nodes_.size(), false);
     warnedFloat_.resize(nodes_.size(), false);
@@ -211,7 +212,6 @@ bool Net::bind(int (*resolve)(void *ctx, const char *pin, int *is_output),
     gateOut_.resize(gates_.size(), LVL_X);
 
     // Precompute per-node the list of gate indices whose out_node is that node
-    nodeGateSources_.resize(nodes_.size());
     for (size_t gate_idx = 0; gate_idx < gates_.size(); ++gate_idx) {
         int out_node = gates_[gate_idx].out_node;
         if (out_node >= 0 && out_node < (int)nodes_.size()) {
