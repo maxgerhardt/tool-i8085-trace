@@ -16,7 +16,7 @@ printf '\x3e\x81\xd3\x03\x3e\x01\xd3\x00\xdb\x02\xd3\xdf\x76' > build/self.bin
 rm -f build/self.txt
 ./build/i8085-trace.exe -q -S -n 200 -l 0x0 -e 0x0 \
   --netlist build/self.net \
-  --io-plugin=./build/i8255.dll  --io-plugin-config="base=0x0" \
+  --io-plugin=./build/i8255.dll  --io-plugin-config="base=0x0;ctrl=0x81" \
   --io-plugin=./build/mc6850.dll --io-plugin-config="base=0xDE;txlog=build/self.txt" build/self.bin >/dev/null 2>&1
 got=$(xxd -p build/self.txt)
 echo "PC readback = $got (expect 01)"

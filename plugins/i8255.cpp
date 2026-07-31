@@ -20,6 +20,7 @@
 //   pa=<byte>     external pin value seen when Port A is an input (default 0)
 //   pb=<byte>     external pin value seen when Port B is an input (default 0)
 //   pc=<byte>     external pin value seen on input Port C nibbles (default 0)
+//   ctrl=<byte>   initial control register value (0x.. or decimal), default 0x9B (all inputs)
 //----------------------------------------------------------------------------
 
 #include "i8085_io_plugin.h"
@@ -180,6 +181,19 @@ static void destroy(void *vctx) {
     delete (Ctx *)vctx;
 }
 
+static void pin_set(void *vctx, const char *pin, UINT8 level) {
+    Ctx *c = (Ctx *)vctx;
+    if (!pin || !pin[0]) return;
+    int bit = atoi(pin + 1) & 7;
+    UINT8 mask = (UINT8)(1u << bit);
+    UINT8 val = (level == 1) ? mask : 0;
+    switch (pin[0]) {
+        case 'A': c->inA = (UINT8)((c->inA & ~mask) | val); break;
+        case 'B': c->inB = (UINT8)((c->inB & ~mask) | val); break;
+        case 'C': c->inC = (UINT8)((c->inC & ~mask) | val); break;
+    }
+}
+
 PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *host, void **out_ctx,
                                        I8085IoPluginAPI *out_api, char *errbuf, size_t errbuf_len) {
     (void)host; // the PPI needs no host services
@@ -191,12 +205,20 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     c->inB = (UINT8)parseNum(cfgValue(config, "pb"), 0);
     c->inC = (UINT8)parseNum(cfgValue(config, "pc"), 0);
 
+    // Apply initial control register if specified (mode-set configuration)
+    std::string ctrlCfg = cfgValue(config, "ctrl");
+    if (!ctrlCfg.empty()) {
+        UINT8 ctrlVal = (UINT8)parseNum(ctrlCfg, 0x9B);
+        writeControl(c, ctrlVal);
+    }
+
     out_api->abi_version = I8085_IO_PLUGIN_ABI_VERSION;
     out_api->destroy = destroy;
     out_api->on_reset = on_reset;
     out_api->on_io_write = on_io_write;
     out_api->on_io_pre_read = on_io_pre_read;
     out_api->snapshot = snapshot;
+    out_api->pin_set = pin_set;
     *out_ctx = c;
     return 0;
 }
