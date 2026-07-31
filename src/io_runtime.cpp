@@ -71,22 +71,85 @@ struct IORuntimeState {
 static IORuntimeState gRuntime;
 
 // --- Peer introspection: back the host API's peer_count / peer_snapshot -------
+//
+// When a --netlist is loaded, two synthetic peers are appended after the real
+// plugins so the board view (and any other snapshot consumer) can see the net
+// itself and the CPU's interrupt/serial lines: index plugins.size()+0 = "net"
+// (one field per net node), plugins.size()+1 = "cpu" (the pending-interrupt
+// latches).
 static int host_peer_count(void) {
-    return (int)gRuntime.plugins.size();
+    return (int)gRuntime.plugins.size() + (gRuntime.wiring ? 2 : 0);
 }
 
-static int host_peer_snapshot(int idx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields) {
-    if (idx < 0 || idx >= (int)gRuntime.plugins.size())
-        return -1;
+static int host_peer_snapshot_net(I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields) {
+    static const char *kLevelStr[3] = {"0", "1", "X"}; // indexed by ln::Level (LVL_0/LVL_1/LVL_X)
     if (out_info) {
-        out_info->kind = nullptr;
+        out_info->kind = "net";
         out_info->base = 0;
         out_info->span = 0;
     }
-    PluginSlot &p = gRuntime.plugins[(size_t)idx];
-    if (!p.api.snapshot)
-        return 0; // opaque peer: exists but does not self-describe
-    return p.api.snapshot(p.ctx, out_info, out_fields, max_fields);
+    int n = gRuntime.net.node_count();
+    if (n > max_fields)
+        n = max_fields;
+    for (int i = 0; i < n; ++i) {
+        out_fields[i].kind = I8085_FIELD_STR;
+        out_fields[i].name = gRuntime.net.node_name(i).c_str(); // lives in Net, stable
+        int lvl = (int)gRuntime.net.node_level(i);
+        out_fields[i].s = (lvl >= 0 && lvl <= 2) ? kLevelStr[lvl] : "X";
+        out_fields[i].u = 0;
+        out_fields[i].bus = nullptr;
+    }
+    return n;
+}
+
+static int host_peer_snapshot_cpu(I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields) {
+    static const char *kFieldNames[4] = {"RST7.5", "RST6.5", "RST5.5", "TRAP"};
+    if (out_info) {
+        out_info->kind = "cpu";
+        out_info->base = 0;
+        out_info->span = 0;
+    }
+    if (!gRuntime.state)
+        return 0;
+    UINT32 values[4] = {
+        gRuntime.state->r7_latch,
+        gRuntime.state->pending_r6,
+        gRuntime.state->pending_r5,
+        gRuntime.state->pending_trap,
+    };
+    int n = 4;
+    if (n > max_fields)
+        n = max_fields;
+    for (int i = 0; i < n; ++i) {
+        out_fields[i].kind = I8085_FIELD_U8;
+        out_fields[i].name = kFieldNames[i];
+        out_fields[i].u = values[i];
+        out_fields[i].s = nullptr;
+        out_fields[i].bus = nullptr;
+    }
+    return n;
+}
+
+static int host_peer_snapshot(int idx, I8085PluginInfo *out_info, I8085StateField *out_fields, int max_fields) {
+    int nplugins = (int)gRuntime.plugins.size();
+    if (idx < 0)
+        return -1;
+    if (idx < nplugins) {
+        if (out_info) {
+            out_info->kind = nullptr;
+            out_info->base = 0;
+            out_info->span = 0;
+        }
+        PluginSlot &p = gRuntime.plugins[(size_t)idx];
+        if (!p.api.snapshot)
+            return 0; // opaque peer: exists but does not self-describe
+        return p.api.snapshot(p.ctx, out_info, out_fields, max_fields);
+    }
+    if (gRuntime.wiring && idx == nplugins)
+        return host_peer_snapshot_net(out_info, out_fields, max_fields);
+    if (gRuntime.wiring && idx == nplugins + 1)
+        return host_peer_snapshot_cpu(out_info, out_fields, max_fields);
+    return -1;
 }
 
 // The host API handed to every plugin: the core byte-channel services (owned by
@@ -130,18 +193,48 @@ static void SetErr(char *errbuf, size_t errbuf_len, const char *msg) {
 // plugin instance (matched against its snapshot() info); `Sub` names a pin
 // within one of that instance's I8085_FIELD_PINS buses -- trailing digits are
 // a bit index (default bit 0 for a single-pin bus, e.g. "IRQ"), the remaining
-// prefix is the bus field name (e.g. "A" for "A3"). `cpu.*` pins are not
-// handled here (added in Task 7); they simply fail to resolve, which is fine
-// since no Task 6 netlist references them.
+// prefix is the bus field name (e.g. "A" for "A3"). `cpu.<Pin>` is the
+// built-in CPU peer (no "@base" -- there's only one CPU): RST7.5/RST6.5/
+// RST5.5/TRAP/SID are inputs the net drives (interrupt lines + serial input);
+// SOD is the one output (serial output driven by the CPU). A CPU PinHandle is
+// marked with plugin=-1 and carries the pin name in `field`/`sub`; note
+// "RST7.5" itself contains a '.', which is fine since we only split on the
+// first '.' after the "cpu" prefix. INTR is omitted: triggerInterrupt's
+// 8080-style INT path (codes 0-7) also needs an RST-vector number that a
+// single boolean net pin cannot carry, so there is no clean single-pin
+// mapping for it.
+static int rt_resolve_cpu_pin(const std::string &pinName, int *is_output) {
+    static const char *kInputs[] = {"RST7.5", "RST6.5", "RST5.5", "TRAP", "SID"};
+    bool known = (pinName == "SOD");
+    for (size_t i = 0; !known && i < sizeof(kInputs) / sizeof(kInputs[0]); ++i)
+        known = (pinName == kInputs[i]);
+    if (!known)
+        return -1;
+
+    if (is_output)
+        *is_output = (pinName == "SOD") ? 1 : 0;
+
+    IORuntimeState::PinHandle ph;
+    ph.plugin = -1; // marks this as the built-in CPU peer, not a loaded plugin
+    ph.field = pinName;
+    ph.bit = 0;
+    ph.sub = pinName;
+    gRuntime.pinTable.push_back(ph);
+    return (int)gRuntime.pinTable.size() - 1;
+}
+
 static int rt_resolve(void *ctx, const char *pin, int *is_output) {
     (void)ctx;
     if (!pin)
         return -1;
     std::string s(pin);
 
+    if (s.rfind("cpu.", 0) == 0)
+        return rt_resolve_cpu_pin(s.substr(4), is_output);
+
     size_t at = s.find('@');
     if (at == std::string::npos)
-        return -1; // e.g. "cpu.IRQ" -- not handled until Task 7
+        return -1;
     std::string kind = s.substr(0, at);
     std::string rest = s.substr(at + 1);
 
@@ -215,6 +308,13 @@ static ln::Drive rt_read_output(void *ctx, int handle) {
     if (handle < 0 || handle >= (int)gRuntime.pinTable.size())
         return ln::DRV_Z;
     const IORuntimeState::PinHandle &ph = gRuntime.pinTable[(size_t)handle];
+    if (ph.plugin == -1) {
+        // Built-in CPU peer. SOD is the only CPU output pin; it is never
+        // tri-stated, so no hi-Z case.
+        if (ph.field == "SOD" && gRuntime.state)
+            return getSODLine(gRuntime.state) ? ln::DRV_1 : ln::DRV_0;
+        return ln::DRV_Z;
+    }
     if (ph.plugin < 0 || ph.plugin >= (int)gRuntime.plugins.size())
         return ln::DRV_Z;
     PluginSlot &p = gRuntime.plugins[(size_t)ph.plugin];
@@ -244,6 +344,24 @@ static void rt_write_input(void *ctx, int handle, int level) {
     if (handle < 0 || handle >= (int)gRuntime.pinTable.size())
         return;
     const IORuntimeState::PinHandle &ph = gRuntime.pinTable[(size_t)handle];
+    if (ph.plugin == -1) {
+        // Built-in CPU peer. LVL_X (unknown/floating) is treated as
+        // deasserted, same as any other CPU input line with nothing driving it.
+        if (!gRuntime.state)
+            return;
+        int active = (level == ln::LVL_1) ? 1 : 0;
+        if (ph.field == "RST7.5")
+            triggerInterrupt(gRuntime.state, 75, active);
+        else if (ph.field == "RST6.5")
+            triggerInterrupt(gRuntime.state, 65, active);
+        else if (ph.field == "RST5.5")
+            triggerInterrupt(gRuntime.state, 55, active);
+        else if (ph.field == "TRAP")
+            triggerInterrupt(gRuntime.state, 45, active);
+        else if (ph.field == "SID")
+            setSIDLine(gRuntime.state, active);
+        return;
+    }
     if (ph.plugin < 0 || ph.plugin >= (int)gRuntime.plugins.size())
         return;
     PluginSlot &p = gRuntime.plugins[(size_t)ph.plugin];
