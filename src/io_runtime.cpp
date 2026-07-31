@@ -286,11 +286,10 @@ static int rt_resolve(void *ctx, const char *pin, int *is_output) {
 
             int is_input_bit = (int)((bus->is_input >> bit) & 1u);
             if (is_output)
-                // A pin's input/output DIRECTION is resolved ONCE here at netlist-load time
-                // from snapshot() and does NOT track runtime mode/direction changes. Chips
-                // whose direction the CPU reprograms at runtime (e.g. the i8255) must be
-                // pre-configured (e.g. i8255 ctrl=) so the load-time snapshot reflects the
-                // intended wiring direction. (Always-output pins like mc6850 /IRQ are unaffected.)
+                // Direction reported here is only the INITIAL (load-time) value.
+                // rt_is_output re-reads each pin's direction from snapshot() every
+                // step, so a chip whose direction the CPU reprograms at runtime
+                // (e.g. the i8255) is routed live -- no pre-configuration needed.
                 *is_output = is_input_bit ? 0 : 1;
 
             IORuntimeState::PinHandle ph;
@@ -342,6 +341,38 @@ static ln::Drive rt_read_output(void *ctx, int handle) {
         return ((bus->level >> ph.bit) & 1u) ? ln::DRV_1 : ln::DRV_0;
     }
     return ln::DRV_Z;
+}
+
+// Current direction of a wired pin, read live from its owner's snapshot each
+// step. This is what makes runtime direction changes (e.g. an 8255 port flipped
+// by a CPU mode-set) take effect without any load-time pre-configuration: a pin
+// is a driver only while its snapshot marks it an output (is_input bit clear).
+static int rt_is_output(void *ctx, int handle) {
+    (void)ctx;
+    if (handle < 0 || handle >= (int)gRuntime.pinTable.size())
+        return 0;
+    const IORuntimeState::PinHandle &ph = gRuntime.pinTable[(size_t)handle];
+    if (ph.plugin == -1)
+        return (ph.field == "SOD") ? 1 : 0; // CPU: only SOD drives
+    if (ph.plugin < 0 || ph.plugin >= (int)gRuntime.plugins.size())
+        return 0;
+    PluginSlot &p = gRuntime.plugins[(size_t)ph.plugin];
+    if (!p.api.snapshot)
+        return 0;
+    I8085PluginInfo info = {};
+    I8085StateField fields[32];
+    int n = p.api.snapshot(p.ctx, &info, fields, 32);
+    for (int fi = 0; fi < n; ++fi) {
+        if (fields[fi].kind != I8085_FIELD_PINS)
+            continue;
+        if (!fields[fi].name || ph.field != fields[fi].name)
+            continue;
+        const I8085PinBus *bus = fields[fi].bus;
+        if (!bus || ph.bit < 0 || ph.bit >= (int)bus->width)
+            return 0;
+        return ((bus->is_input >> ph.bit) & 1u) ? 0 : 1;
+    }
+    return 0;
 }
 
 static void rt_write_input(void *ctx, int handle, int level) {
@@ -441,7 +472,7 @@ void io_runtime_on_step(UINT64 step, UINT64 tstates) {
     }
 
     if (gRuntime.wiring) {
-        ln::Host h{nullptr, rt_read_output, rt_write_input, rt_warn};
+        ln::Host h{nullptr, rt_read_output, rt_write_input, rt_warn, rt_is_output};
         gRuntime.net.step(h);
     }
 }

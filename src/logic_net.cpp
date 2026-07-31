@@ -234,6 +234,18 @@ void Net::step(const Host &host) {
     if ((int)gateOut_.size() != (int)gates_.size()) return;
     if ((int)nodeGateSources_.size() != (int)nodes_.size()) return;
 
+    // Refresh each endpoint's direction live (if the host supports it), so a pin
+    // whose owner reprograms its direction at runtime (e.g. an 8255 port switched
+    // between input and output by a CPU mode-set) is routed correctly this step:
+    // driven while it is an output, delivered-to while it is an input. When the
+    // host provides no is_output callback the bind-time direction stands.
+    if (host.is_output) {
+        for (auto &ep : endpoints_) {
+            if (ep.handle >= 0)
+                ep.is_output = host.is_output(host.ctx, ep.handle) != 0;
+        }
+    }
+
     // Read pin drivers ONCE at top of step(); cache per output endpoint
     std::vector<Drive> pin_drivers(endpoints_.size());
     for (size_t i = 0; i < endpoints_.size(); ++i) {

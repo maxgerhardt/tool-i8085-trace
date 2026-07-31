@@ -15,6 +15,12 @@ struct Host {                                   // supplied by the runtime / tes
     Drive (*read_output)(void *ctx, int handle);        // driver state of an output pin
     void  (*write_input)(void *ctx, int handle, int level); // deliver 0/1/2(X) to an input pin
     void  (*warn)(void *ctx, const char *msg);
+    // Optional. Current direction of a pin: nonzero = output/driver, 0 = input.
+    // Called each step so a pin whose owner reprograms its direction at runtime
+    // (e.g. an 8255 port) is routed live -- read as a driver while it is an
+    // output, delivered to as a receiver while it is an input. NULL keeps the
+    // bind-time direction fixed (used by unit tests with static directions).
+    int   (*is_output)(void *ctx, int handle);
 };
 
 class Net {

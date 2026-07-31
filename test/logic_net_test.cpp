@@ -112,6 +112,46 @@ static void test_bind_unknown_pin() {
     assert(!ok && err.find("unknown pin") != std::string::npos);
 }
 
+// Dynamic direction: an endpoint that flips between output (drives) and input
+// (receives) between steps is routed live via the host's is_output callback --
+// no bind-time direction hint. Models an 8255 port reprogrammed at runtime.
+struct DynFake {
+    ln::Drive drv[8];
+    int dir[8]; // 1 = output/driver, 0 = input/receiver
+    int in[8];
+    int warns = 0;
+};
+static ln::Drive dyn_read(void *c, int h) { return ((DynFake *)c)->drv[h]; }
+static void dyn_write(void *c, int h, int lv) { ((DynFake *)c)->in[h] = lv; }
+static void dyn_warn(void *c, const char *) { ((DynFake *)c)->warns++; }
+static int dyn_is_output(void *c, int h) { return ((DynFake *)c)->dir[h]; }
+
+static void test_dynamic_direction() {
+    ln::Net net; std::string err;
+    net.parse("pull N up\nwire N P\n", err);         // one pin P on node N, pull-up
+    int next = 0; net.bind(seq_resolve, &next, err);  // P -> handle 0 (bind-time dir ignored)
+    DynFake f{}; f.in[0] = -1;
+    ln::Host host{&f, dyn_read, dyn_write, dyn_warn, dyn_is_output};
+
+    // P is an OUTPUT driving 0 -> node follows the driver; nothing delivered.
+    f.dir[0] = 1; f.drv[0] = ln::DRV_0;
+    net.step(host);
+    assert(net.node_level(0) == ln::LVL_0);
+    assert(f.in[0] == -1);
+
+    // P flips to INPUT -> stops driving -> pull-up -> node 1, delivered to P.
+    f.dir[0] = 0;
+    net.step(host);
+    assert(net.node_level(0) == ln::LVL_1);
+    assert(f.in[0] == ln::LVL_1);
+
+    // P flips back to OUTPUT, now driving 1 -> node follows the driver again.
+    f.dir[0] = 1; f.drv[0] = ln::DRV_1;
+    net.step(host);
+    assert(net.node_level(0) == ln::LVL_1);
+    assert(f.warns == 0);
+}
+
 int main() {
     test_parse_basic();
     test_parse_error();
@@ -121,6 +161,7 @@ int main() {
     test_and_gate();
     test_gate_conflict_detection();
     test_bind_unknown_pin();
+    test_dynamic_direction();
     printf("logic_net_test: PASS\n");
     return 0;
 }
