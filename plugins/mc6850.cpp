@@ -29,6 +29,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <string>
 #include <vector>
@@ -181,7 +182,10 @@ static void on_step(void *vctx, State8085 *state, UINT64 step, UINT64 tstates) {
     // The 6850 /IRQ is level-based on (RDRF & RX-int-enable); assert the 8085's
     // RST 7.5 latch while a byte is pending and RX interrupts are enabled, so a
     // byte that arrived before EI still interrupts once interrupts come on.
-    if (c->rdrFull && c->rxIntEnabled)
+    // When a netlist is authoritative (wiring_active), the interrupt reaches
+    // the CPU via the modeled /IRQ -> pull-up -> inverter -> RST7.5 wiring
+    // instead, so skip the direct poke and defer to the net.
+    if (c->rdrFull && c->rxIntEnabled && !(c->host && c->host->wiring_active))
         state->r7_latch = 1;
 }
 
@@ -248,12 +252,16 @@ static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int m
         info->span = 2;
     }
     // Each modem line is a 1-pin bus so it renders as a named pin (arrow/glow).
-    // /IRQ (output) asserts while a received byte is pending with RX-int enabled.
-    UINT32 irq = (c->rdrFull && c->rxIntEnabled) ? 1u : 0u;
-    c->busRTS = {1, c->rtsAsserted ? 1u : 0u, 0u, 0u};   // output
-    c->busIRQ = {1, irq, 0u, 0u};                        // output
-    c->busCTS = {1, (UINT32)(c->ctsLevel & 1), 1u, 0u};  // input
-    c->busDCD = {1, (UINT32)(c->dcdLevel & 1), 1u, 0u};  // input
+    // /IRQ (output) is open-drain, active-low, no internal pull: while a
+    // received byte is pending with RX-int enabled it drives low; otherwise it
+    // releases to hi-Z so an external pull-up (modeled in the netlist) holds
+    // it high when idle.
+    bool irqAsserted = (c->rdrFull && c->rxIntEnabled);
+    c->busRTS = {1, c->rtsAsserted ? 1u : 0u, 0u, 0u};  // output
+    c->busIRQ = irqAsserted ? I8085PinBus{1, 0u, 0u, 0u}   // drive low
+                            : I8085PinBus{1, 0u, 0u, 1u};  // hi-Z (released)
+    c->busCTS = {1, (UINT32)(c->ctsLevel & 1), 1u, 0u}; // input
+    c->busDCD = {1, (UINT32)(c->dcdLevel & 1), 1u, 0u}; // input
 
     int n = 0;
     auto add = [&](const char *name, UINT8 kind, UINT32 u, const I8085PinBus *bus) {
@@ -270,6 +278,18 @@ static int snapshot(void *vctx, I8085PluginInfo *info, I8085StateField *f, int m
     add("CTS", I8085_FIELD_PINS, 0, &c->busCTS);
     add("DCD", I8085_FIELD_PINS, 0, &c->busDCD);
     return n;
+}
+
+// Net-driven modem input lines. Called by the runtime net engine when
+// wiring_active, to set the levels the netlist has resolved for CTS/DCD (this
+// plugin's only inputs); an unresolved/contended net (X) is treated as 0.
+static void pin_set(void *vctx, const char *pin, UINT8 level) {
+    Ctx *c = (Ctx *)vctx;
+    int lv = (level == 1) ? 1 : 0; // X treated as 0
+    if (!strcmp(pin, "CTS"))
+        c->ctsLevel = lv;
+    else if (!strcmp(pin, "DCD"))
+        c->dcdLevel = lv;
 }
 
 PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *host, void **out_ctx,
@@ -344,6 +364,7 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     out_api->on_io_pre_read = on_io_pre_read;
     out_api->on_io_post_read = on_io_post_read;
     out_api->snapshot = snapshot;
+    out_api->pin_set = pin_set;
     *out_ctx = c;
     (void)errbuf_len;
     return 0;

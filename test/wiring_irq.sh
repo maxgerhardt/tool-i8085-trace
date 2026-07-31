@@ -27,7 +27,7 @@ EOF
   head -c 51 /dev/zero
   printf '\x3E\xAA\xD3\xDF\x76'
 } > build/irq.bin
-rm -f build/irq.txt
+rm -f build/irq.txt build/irq_neg.txt
 # Feed one RX byte (0x41) so the ACIA raises /IRQ.
 ./build/i8085-trace.exe -q -S -n 20000 -l 0x0 -e 0x0 \
   --netlist build/irq.net \
@@ -35,4 +35,16 @@ rm -f build/irq.txt
 got=$(xxd -p build/irq.txt)
 echo "ISR sentinel = $got (expect aa)"
 [ "$got" = "aa" ] || { echo FAIL; exit 1; }
+
+# NEGATIVE check: same netlist + program, but NO RX byte fed. With the /IRQ
+# line correctly modeled as open-drain (idle => hi-Z => pull-up holds IRQ_L
+# high => inverter drives RST_IN low => no RST7.5), the ISR must never run,
+# so the sentinel must be ABSENT from the txlog.
+./build/i8085-trace.exe -q -S -n 20000 -l 0x0 -e 0x0 \
+  --netlist build/irq.net \
+  --io-plugin=./build/mc6850.dll --io-plugin-config="base=0xDE;txlog=build/irq_neg.txt" build/irq.bin >/dev/null 2>&1
+gotneg=$(xxd -p build/irq_neg.txt)
+echo "ISR sentinel (no RX byte) = ${gotneg:-<empty>} (expect NOT aa)"
+[ "$gotneg" != "aa" ] || { echo FAIL; exit 1; }
+
 echo PASS
