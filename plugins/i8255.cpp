@@ -144,6 +144,10 @@ static void on_io_write(void *vctx, State8085 *state, UINT8 port, UINT8 value) {
 static void on_reset(void *vctx, State8085 *state) {
     Ctx *c = (Ctx *)vctx;
     (void)state;
+    // Restore power-on defaults (all ports input). Note: ctrl= config is applied only at
+    // init for the netlist's bind-time direction snapshot; on_reset unconditionally
+    // restores 0x9B. The guest program must reassert a compatible mode-set (e.g.
+    // MVI A,0x81; OUT 03) before relying on wired inputs.
     c->ctrl = 0x9B;
     c->aIn = c->bIn = c->cUpperIn = c->cLowerIn = true;
     c->groupAmode = c->groupBmode = 0;
@@ -205,7 +209,11 @@ PLUGIN_EXPORT int i8085_io_plugin_init(const char *config, const I8085HostAPI *h
     c->inB = (UINT8)parseNum(cfgValue(config, "pb"), 0);
     c->inC = (UINT8)parseNum(cfgValue(config, "pc"), 0);
 
-    // Apply initial control register if specified (mode-set configuration)
+    // Apply initial control register if specified (mode-set configuration).
+    // This ctrl= value is used by the netlist's bind-time snapshot() to classify each
+    // wired pin's direction (input vs output). Note that on_reset() will restore the
+    // power-on default (0x9B, all inputs), so ctrl= does NOT persist across resets.
+    // The guest must reassert a compatible mode-set before relying on wired inputs.
     std::string ctrlCfg = cfgValue(config, "ctrl");
     if (!ctrlCfg.empty()) {
         UINT8 ctrlVal = (UINT8)parseNum(ctrlCfg, 0x9B);

@@ -286,6 +286,11 @@ static int rt_resolve(void *ctx, const char *pin, int *is_output) {
 
             int is_input_bit = (int)((bus->is_input >> bit) & 1u);
             if (is_output)
+                // A pin's input/output DIRECTION is resolved ONCE here at netlist-load time
+                // from snapshot() and does NOT track runtime mode/direction changes. Chips
+                // whose direction the CPU reprograms at runtime (e.g. the i8255) must be
+                // pre-configured (e.g. i8255 ctrl=) so the load-time snapshot reflects the
+                // intended wiring direction. (Always-output pins like mc6850 /IRQ are unaffected.)
                 *is_output = is_input_bit ? 0 : 1;
 
             IORuntimeState::PinHandle ph;
